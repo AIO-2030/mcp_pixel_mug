@@ -51,6 +51,8 @@ class MCPServer:
                 result = await self._handle_prepare_mqtt_connection(params)
             elif method == 'publish_action':
                 result = await self._handle_publish_action(params)
+            elif method == 'convert_image_to_pixels':
+                result = await self._handle_convert_image_to_pixels(params)
             else:
                 return self._create_error_response(
                     request_id,
@@ -110,6 +112,18 @@ class MCPServer:
         mug_service.validate_device_params(action, action_params)
         
         return await mug_service.publish_action(device_id, action, action_params)
+    
+    async def _handle_convert_image_to_pixels(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle convert_image_to_pixels request"""
+        image_data = params.get('image_data')
+        if not image_data:
+            raise ValueError("Missing required parameter: image_data")
+        
+        target_width = params.get('target_width', 16)
+        target_height = params.get('target_height', 16)
+        resize_method = params.get('resize_method', 'nearest')
+        
+        return mug_service.convert_image_to_pixels(image_data, target_width, target_height, resize_method)
     
     def _create_success_response(self, request_id: Any, result: Any) -> str:
         """Create success response"""
