@@ -260,6 +260,50 @@ if __name__ == "__main__":
         print("   python start_server.py")
         
         return True
+    
+    def build_executable(self, mode: str = "stdio"):
+        """Build standalone executable"""
+        print(f"🚀 Building executable for {mode} mode...")
+        
+        try:
+            # Check if PyInstaller is available
+            result = subprocess.run(
+                [sys.executable, "-c", "import PyInstaller"],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode != 0:
+                print("📦 Installing PyInstaller...")
+                install_result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "pyinstaller==6.3.0"],
+                    cwd=self.project_root
+                )
+                if install_result.returncode != 0:
+                    print("❌ Failed to install PyInstaller")
+                    return False
+            
+            # Run the build script
+            build_script = self.project_root / "build_exec.sh"
+            if build_script.exists():
+                result = subprocess.run(
+                    ["bash", str(build_script), mode],
+                    cwd=self.project_root
+                )
+                
+                if result.returncode == 0:
+                    print("✅ Executable build completed")
+                    return True
+                else:
+                    print("❌ Executable build failed")
+                    return False
+            else:
+                print("❌ build_exec.sh not found")
+                return False
+                
+        except Exception as e:
+            print(f"❌ Error occurred during executable build: {str(e)}")
+            return False
 
 
 def main():
@@ -281,9 +325,12 @@ def main():
             builder.validate_project()
         elif command == "all":
             builder.build_all()
+        elif command == "exe" or command == "executable":
+            mode = sys.argv[2] if len(sys.argv) > 2 else "stdio"
+            builder.build_executable(mode)
         else:
             print(f"Unknown command: {command}")
-            print("Available commands: clean, install, test, build, validate, all")
+            print("Available commands: clean, install, test, build, validate, all, exe [stdio|mcp]")
             sys.exit(1)
     else:
         # Default to complete build

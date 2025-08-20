@@ -83,6 +83,21 @@ cd dist
 python start_server.py
 ```
 
+#### 方式4: Standalone Executables (No Python Required)
+```bash
+# Build executables first
+python build_simple_exe.py
+
+# Run executables
+cd dist
+./launch.sh              # Linux/Mac launcher
+# or
+launch.bat               # Windows launcher
+# or directly
+./pixelmug_stdio         # Standard I/O mode
+./pixelmug_interactive   # Interactive mode
+```
+
 ## 🎮 Core MCP Methods
 
 The service implements three primary JSON-RPC 2.0 methods:
