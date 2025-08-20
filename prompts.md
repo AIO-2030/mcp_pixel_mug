@@ -109,3 +109,21 @@ mcp_pixel_mug
 ### 📖 用法说明（README建议摘要）
 
 
+## Building Executables
+
+1. Make the build script executable:
+bash chmod +x build_exec.sh
+2. Build stdio mode executable:
+bash ./build_exec.sh
+3. Build MCP mode executable:
+bash ./build_exec.sh mcp
+The executables will be created at:
+- stdio mode: `dist/mcp_mug`
+- MCP mode: `dist/mcp_mug`
+
+## Testing
+
+Run the test scripts:
+bash chmod +x test_*.sh ./test_help.sh 
+
+
