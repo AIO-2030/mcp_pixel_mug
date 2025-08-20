@@ -100,7 +100,16 @@ launch.bat               # Windows launcher
 
 ## 🎮 Core MCP Methods
 
-The service implements three primary JSON-RPC 2.0 methods:
+### New Feature: Pixel Art Display 🎨
+
+PixelMug now supports displaying custom pixel art on the mug's surface! You can send 2D pixel patterns using:
+- **Hex colors**: `[["#FF0000", "#00FF00"], ["#0000FF", "#FFFFFF"]]`
+- **RGB tuples**: `[[[255,0,0], [0,255,0]], [[0,0,255], [255,255,255]]]` 
+- **Base64 images**: Encoded PNG/JPEG data
+
+**Example patterns included**: Smiley face, heart, coffee cup, and more!
+
+The service implements four primary JSON-RPC 2.0 methods:
 
 ### 1. `help` - Service Information
 
