@@ -1,6 +1,6 @@
 #!/bin/bash
 # PixelMug MCP Executable Build Script
-# Wrapper script that calls build_simple_exe.py for reliable building
+# Wrapper script that calls build.py for reliable building
 
 set -e
 
@@ -9,9 +9,9 @@ echo "=================================="
 echo "📋 Using Python build script for maximum reliability..."
 echo ""
 
-# Check if build_simple_exe.py exists
-if [ ! -f "build_simple_exe.py" ]; then
-    echo "❌ Error: build_simple_exe.py not found in current directory"
+# Check if build.py exists
+if [ ! -f "build.py" ]; then
+    echo "❌ Error: build.py not found in current directory"
     echo "   Please run this script from the project root directory"
     exit 1
 fi
@@ -49,10 +49,10 @@ else
 fi
 
 # Call the Python build script
-echo "▶️  Executing: $PYTHON_CMD build_simple_exe.py"
+echo "▶️  Executing: $PYTHON_CMD build.py build"
 echo ""
 
-if $PYTHON_CMD build_simple_exe.py; then
+if $PYTHON_CMD build.py build; then
     echo ""
     echo "🎉 Build completed successfully!"
     echo ""
