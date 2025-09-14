@@ -1,4 +1,19 @@
-paho-mqtt==1.6.1
-asyncio-mqtt==0.13.0
-pyinstaller==6.3.0
-Pillow==10.0.0
+# PixelMug IoT STS Service Dependencies
+
+# 腾讯云SDK
+tencentcloud-sdk-python-sts>=3.0.0
+tencentcloud-sdk-python-iotexplorer>=3.0.0
+
+# FastAPI和相关依赖
+fastapi>=0.68.0
+uvicorn[standard]>=0.15.0
+
+# 图像处理
+Pillow>=8.0.0
+
+# 原有依赖保留
+paho-mqtt>=1.6.0
+asyncio-mqtt>=0.11.0
+
+# 日志和配置
+python-dotenv>=0.19.0

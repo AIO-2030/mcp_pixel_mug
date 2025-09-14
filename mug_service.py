@@ -1,22 +1,36 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PixelMug Smart Mug MQTT Control Service
-Provides device connection preparation and operation publishing functionality
+PixelMug Smart Mug Tencent Cloud IoT Control Service
+Provides device control functionality via Tencent Cloud IoT Explorer API
 """
 
 import json
 import uuid
 import datetime
-import ssl
 import logging
 import base64
 import re
 import io
+import os
 from typing import Dict, Any, Optional, Union, List
-import paho.mqtt.client as mqtt
-import asyncio
-from asyncio_mqtt import Client
+
+# 腾讯云STS相关依赖
+try:
+    from tencentcloud.common import credential
+    from tencentcloud.common.profile.client_profile import ClientProfile
+    from tencentcloud.common.profile.http_profile import HttpProfile
+    from tencentcloud.sts.v20180813 import sts_client, models as sts_models
+    TENCENT_CLOUD_AVAILABLE = True
+except ImportError:
+    TENCENT_CLOUD_AVAILABLE = False
+
+# 腾讯云IoT Explorer相关依赖
+try:
+    from tencentcloud.iotexplorer.v20190423 import iotexplorer_client, models as iot_models
+    IOT_EXPLORER_AVAILABLE = True
+except ImportError:
+    IOT_EXPLORER_AVAILABLE = False
 
 try:
     from PIL import Image
@@ -30,75 +44,13 @@ class MugService:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
-        # Mock device registration database
-        self.mock_devices = {
-            "mug_001": {
-                "device_id": "mug_001",
-                "host": "a3k7j9m2l5n8p1.iot.ap-northeast-1.amazonaws.com",
-                "port": 8883,
-                "client_id": "mug_001",
-                "cert": """-----BEGIN CERTIFICATE-----
-MIIDWjCCAkKgAwIBAgIVANXXXXXXXXXXXXXXXXXXXXXXXXXXMA0GCSqGSIb3DQEB
-CwUAME0xSzBJBgNVBAsMQkFtYXpvbiBXZWIgU2VydmljZXMgTz1BbWF6b24uY29t
-IEluYy4gTD1TZWF0dGxlIFNUPVdhc2hpbmd0b24gQz1VUzAeFw0yNDA4MjEwOTAw
-MDBaFw0yNTA4MjEwOTAwMDBaMB4xHDAaBgNVBAMME0FXUyBJb1QgQ2VydGlmaWNh
-dGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQC7XXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXX
------END CERTIFICATE-----""",
-                "key": """-----BEGIN PRIVATE KEY-----
-MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7XXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
-XXXXXXXXXXXXXXXXXXXXXXX
------END PRIVATE KEY-----""",
-                "ca_cert": """-----BEGIN CERTIFICATE-----
-MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
-ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
-b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
-MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
-b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
-ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
-9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
-IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
-VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
-93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
-jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
-AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
-A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
-U5PMCCjjmCXPI6T53iHTfIuJruydjsw2hUwsqdEx7ZgIkn+aU9D68Ss8XlJ8yFLr
-9s0xWbCg5Y5PYJrg2E2ZrNYDpVzLj5QKvfVxvJVF8UgKF7Gd7+JMYX0H0sTqvR8b
-x1cVoEnyL0L1YYXB3wdHBhFFrluxC8u8BbgDyMD+Q9Zx7LDLJYdVEPM3qsjQQ8LB
-8+XZGQWU2PNzI0zBVAkABJ8hJ8qYDQeXV/o3k4yXJ8zHZzHfp2K3oNR2iJzLIq+j
-A4nMgmjVYGpPj7YE6P3bBbRqIWgG
------END CERTIFICATE-----"""
-            },
-            "mug_002": {
-                "device_id": "mug_002", 
-                "host": "a3k7j9m2l5n8p2.iot.ap-northeast-1.amazonaws.com",
-                "port": 8883,
-                "client_id": "mug_002",
-                "cert": "...",  # Similar certificate content
-                "key": "...",   # Similar private key content
-                "ca_cert": "..."
-            }
-        }
         
     def get_help(self) -> Dict[str, Any]:
         """Return service help information"""
         return {
             "service": "mcp_pixel_mug",
-            "version": "1.0.0",
-            "description": "PixelMug Smart Mug MQTT Control Interface",
+            "version": "2.0.0",
+            "description": "PixelMug Smart Mug Tencent Cloud IoT Control Interface",
             "methods": [
                 {
                     "name": "help",
@@ -106,19 +58,33 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
                     "params": {}
                 },
                 {
-                    "name": "prepare_mqtt_connection", 
-                    "description": "Prepare MQTT connection parameters",
+                    "name": "issue_sts", 
+                    "description": "Issue Tencent Cloud IoT STS temporary access credentials",
                     "params": {
-                        "device_id": "Device ID, e.g. mug_001"
+                        "product_id": "Product ID, e.g.: ABC123DEF",
+                        "device_name": "Device name, e.g.: mug_001"
                     }
                 },
                 {
-                    "name": "publish_action",
-                    "description": "Publish device operation commands",
+                    "name": "send_pixel_image",
+                    "description": "Send pixel image to device via Tencent Cloud IoT",
                     "params": {
-                        "device_id": "Device ID",
-                        "action": "Operation type: heat/display/color/brew/pixel_art",
-                        "params": "Operation parameters"
+                        "product_id": "Product ID",
+                        "device_name": "Device name",
+                        "image_data": "Base64 encoded image or pixel matrix",
+                        "target_width": "Target width (optional, default: 16)",
+                        "target_height": "Target height (optional, default: 16)"
+                    }
+                },
+                {
+                    "name": "send_gif_animation",
+                    "description": "Send GIF pixel animation to device via Tencent Cloud IoT",
+                    "params": {
+                        "product_id": "Product ID",
+                        "device_name": "Device name", 
+                        "gif_data": "Base64 encoded GIF or frame array",
+                        "frame_delay": "Delay between frames in ms (optional, default: 100)",
+                        "loop_count": "Number of loops (optional, default: 0 for infinite)"
                     }
                 },
                 {
@@ -133,11 +99,8 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
                 }
             ],
             "supported_actions": [
-                {"action": "heat", "description": "Heating", "params": {"temperature": "Target temperature (°C)"}},
-                {"action": "display", "description": "Display information", "params": {"text": "Display text", "duration": "Display duration (seconds)"}},
-                {"action": "color", "description": "Color change", "params": {"color": "Color code (hex)", "mode": "Color mode"}},
-                {"action": "brew", "description": "Brewing", "params": {"type": "Coffee type", "strength": "Strength"}},
-                {"action": "pixel_art", "description": "Display pixel art", "params": {"pattern": "Pixel pattern (2D array or base64)", "width": "Image width (pixels)", "height": "Image height (pixels)", "duration": "Display duration (seconds)"}}
+                {"action": "send_pixel_image", "description": "Send pixel image via Tencent Cloud IoT", "params": {"image_data": "Pixel data or base64 image", "width": "Image width", "height": "Image height"}},
+                {"action": "send_gif_animation", "description": "Send GIF animation via Tencent Cloud IoT", "params": {"gif_data": "GIF frame data", "frame_delay": "Frame delay (ms)", "loop_count": "Loop count"}}
             ],
             "pixel_art_examples": self._generate_pixel_examples(),
             "pixel_art_formats": {
@@ -147,125 +110,362 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
             }
         }
     
-    def prepare_mqtt_connection(self, device_id: str) -> Dict[str, Any]:
-        """Prepare MQTT connection parameters"""
+    def issue_sts(self, product_id: str, device_name: str) -> Dict[str, Any]:
+        """Issue Tencent Cloud IoT STS temporary access credentials"""
         try:
-            device_info = self.mock_devices.get(device_id)
-            if not device_info:
-                raise ValueError(f"Device {device_id} not registered")
+            # Check if Tencent Cloud SDK is available
+            if not TENCENT_CLOUD_AVAILABLE:
+                raise ImportError("Tencent Cloud SDK not installed, please install tencentcloud-sdk-python-sts")
             
-            # Build topic name using univoice_mug_{action} format as required
-            topic_prefix = f"univoice_mug_{device_id}"
+            # Get configuration from environment variables
+            role_arn = os.getenv("IOT_ROLE_ARN")
+            if not role_arn:
+                raise ValueError("Environment variable IOT_ROLE_ARN is not set")
             
-            connection_info = {
-                "host": device_info["host"],
-                "topic": f"{topic_prefix}/cmd",  # Command topic
-                "status_topic": f"{topic_prefix}/status",  # Status topic
-                "protocol": "mqtts",
-                "port": device_info["port"],
-                "client_id": device_info["client_id"],
-                "cert": device_info["cert"],
-                "key": device_info["key"],
-                "ca_cert": device_info["ca_cert"],
-                "payload_schema": {
-                    "action": "string",
-                    "params": {
-                        "temperature": "int",
-                        "color": "string",
-                        "text": "string",
-                        "duration": "int",
-                        "type": "string",
-                        "strength": "string",
-                        "mode": "string",
-                        "pattern": "array or string",
-                        "width": "int",
-                        "height": "int"
-                    },
-                    "timestamp": "string",
-                    "request_id": "string"
-                }
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+            
+            # Get Tencent Cloud credentials
+            cred = self._get_tencent_credentials()
+            
+            # Configure HTTP and Client Profile
+            httpProfile = HttpProfile()
+            httpProfile.endpoint = "sts.tencentcloudapi.com"
+            
+            clientProfile = ClientProfile()
+            clientProfile.httpProfile = httpProfile
+            
+            # Create STS client
+            client = sts_client.StsClient(cred, region, clientProfile)
+            
+            # Build session policy to limit permissions to single device
+            session_policy = self._build_session_policy(product_id, device_name)
+            
+            # Create AssumeRole request
+            req = sts_models.AssumeRoleRequest()
+            params = {
+                "RoleArn": role_arn,
+                "RoleSessionName": f"iot-device-{product_id}-{device_name}-{int(datetime.datetime.now().timestamp())}",
+                "DurationSeconds": 900,  # 15 minutes
+                "Policy": session_policy
             }
+            req.from_json_string(json.dumps(params))
             
-            self.logger.info(f"Successfully prepared connection parameters for device {device_id}")
-            return connection_info
+            # Send request
+            resp = client.AssumeRole(req)
             
-        except Exception as e:
-            self.logger.error(f"Failed to prepare connection parameters: {str(e)}")
-            raise
-    
-    async def publish_action(self, device_id: str, action: str, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Publish operation commands to MQTT"""
-        try:
-            # Get device connection information
-            connection_info = self.prepare_mqtt_connection(device_id)
-            
-            # Build message payload
-            timestamp = datetime.datetime.utcnow().isoformat() + "Z"
-            request_id = str(uuid.uuid4())
-            
-            payload = {
-                "action": action,
-                "params": params,
-                "timestamp": timestamp,
-                "request_id": request_id,
-                "device_id": device_id
-            }
-            
-            # Validate operation type
-            valid_actions = ["heat", "display", "color", "brew", "pixel_art"]
-            if action not in valid_actions:
-                raise ValueError(f"Unsupported operation type: {action}, supported types: {valid_actions}")
-            
-            # Use async MQTT client to publish message
-            await self._publish_mqtt_message(connection_info, payload)
-            
+            # Build response result
+            credentials = resp.Credentials
             result = {
-                "status": "published",
-                "timestamp": timestamp,
-                "request_id": request_id,
-                "topic": connection_info["topic"],
-                "payload": payload
+                "tmpSecretId": credentials.TmpSecretId,
+                "tmpSecretKey": credentials.TmpSecretKey,
+                "token": credentials.Token,
+                "expiration": credentials.Expiration,
+                "region": region,
+                "product_id": product_id,
+                "device_name": device_name,
+                "issued_at": datetime.datetime.utcnow().isoformat() + "Z"
             }
             
-            self.logger.info(f"Successfully published operation {action} to device {device_id}")
+            self.logger.info(f"Successfully issued STS credentials for device {product_id}/{device_name}")
             return result
             
         except Exception as e:
-            self.logger.error(f"Failed to publish operation: {str(e)}")
+            self.logger.error(f"Failed to issue STS credentials: {str(e)}")
             raise
     
-    async def _publish_mqtt_message(self, connection_info: Dict[str, Any], payload: Dict[str, Any]):
-        """Publish MQTT message asynchronously"""
+    def _get_tencent_credentials(self):
+        """Get Tencent Cloud credentials, prioritize CVM/TKE bound role, otherwise read from environment variables"""
         try:
-            # Create SSL context
-            ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-            ssl_context.load_verify_locations(cadata=connection_info["ca_cert"])
-            ssl_context.load_cert_chain(
-                certfile=None,
-                keyfile=None,
-                cert_chain=connection_info["cert"],
-                key=connection_info["key"]
-            )
+            # Try to get explicit AK/SK from environment variables
+            secret_id = os.getenv("TC_SECRET_ID")
+            secret_key = os.getenv("TC_SECRET_KEY")
             
-            # Use async MQTT client
-            async with Client(
-                hostname=connection_info["host"],
-                port=connection_info["port"],
-                client_id=connection_info["client_id"],
-                tls_context=ssl_context
-            ) as client:
-                await client.publish(
-                    connection_info["topic"],
-                    json.dumps(payload),
-                    qos=1
-                )
-                self.logger.info(f"Message published to topic: {connection_info['topic']}")
+            if secret_id and secret_key:
+                self.logger.info("Using Tencent Cloud credentials from environment variables")
+                return credential.Credential(secret_id, secret_key)
+            else:
+                # Use CVM/TKE metadata service to automatically get temporary credentials
+                self.logger.info("Using CVM/TKE bound role to get temporary credentials")
+                return credential.Credential()
                 
         except Exception as e:
-            self.logger.warning(f"MQTT publish failed (simulation mode): {str(e)}")
-            # In development environment, we simulate successful publishing
-            self.logger.info("Using simulation mode, assuming message published successfully")
+            self.logger.error(f"Failed to get Tencent Cloud credentials: {str(e)}")
+            raise ValueError("Unable to get Tencent Cloud credentials, please check environment variables TC_SECRET_ID/TC_SECRET_KEY or ensure running on CVM/TKE with bound role")
     
+    def _build_session_policy(self, product_id: str, device_name: str) -> str:
+        """Build session policy to limit permissions to single device UpdateDeviceShadow and PublishMessage operations"""
+        policy = {
+            "version": "2.0",
+            "statement": [
+                {
+                    "effect": "allow",
+                    "action": [
+                        "iotcloud:UpdateDeviceShadow",
+                        "iotcloud:PublishMessage"
+                    ],
+                    "resource": [
+                        f"qcs::iotcloud:::productId/{product_id}/device/{device_name}"
+                    ]
+                }
+            ]
+        }
+        return json.dumps(policy)
+    
+    def _authorize(self, user_id: str, product_id: str, device_name: str) -> bool:
+        """
+        Authorization method: Check if user has permission to request STS for specified device
+        Note: This should integrate with actual user system for authorization
+        """
+        # TODO: This should integrate with actual user system for authorization
+        # Example: Check if user owns the device
+        # In actual implementation, should query database or call permission service
+        
+        # Temporary implementation: Simple mock authorization
+        self.logger.warning("Currently using mock authorization, please integrate with actual user system in production")
+        
+        # Mock: Check if device is in allowed device list
+        allowed_devices = [
+            ("ABC123DEF", "mug_001"),
+            ("ABC123DEF", "mug_002"),
+            ("XYZ789GHI", "device_001")
+        ]
+        
+        if (product_id, device_name) in allowed_devices:
+            self.logger.info(f"User {user_id} has permission to access device {product_id}/{device_name}")
+            return True
+        else:
+            self.logger.warning(f"User {user_id} has no permission to access device {product_id}/{device_name}")
+            return False
+    
+    def _create_iot_client(self):
+        """Create Tencent Cloud IoT Explorer client"""
+        try:
+            # Check if IoT Explorer SDK is available
+            if not IOT_EXPLORER_AVAILABLE:
+                raise ImportError("Tencent Cloud IoT Explorer SDK not installed, please install tencentcloud-sdk-python-iotexplorer")
+            
+            # Get Tencent Cloud credentials
+            cred = self._get_tencent_credentials()
+            
+            # Get region from environment
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+            
+            # Configure HTTP and Client Profile
+            httpProfile = HttpProfile()
+            httpProfile.endpoint = "iotexplorer.tencentcloudapi.com"
+            
+            clientProfile = ClientProfile()
+            clientProfile.httpProfile = httpProfile
+            
+            # Create IoT Explorer client
+            client = iotexplorer_client.IotexplorerClient(cred, region, clientProfile)
+            
+            self.logger.info("Successfully created IoT Explorer client")
+            return client
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create IoT Explorer client: {str(e)}")
+            raise
+
+    def send_pixel_image(self, product_id: str, device_name: str, image_data: Union[str, List], 
+                        target_width: int = 16, target_height: int = 16) -> Dict[str, Any]:
+        """Send pixel image to device via Tencent Cloud IoT Explorer"""
+        try:
+            # Create IoT client
+            client = self._create_iot_client()
+            
+            # Process image data
+            if isinstance(image_data, str):
+                # If it's base64 encoded image, convert to pixel matrix
+                conversion_result = self.convert_image_to_pixels(image_data, target_width, target_height)
+                pixel_matrix = conversion_result["pixel_matrix"]
+                width = conversion_result["width"]
+                height = conversion_result["height"]
+            else:
+                # If it's already a pixel matrix
+                pixel_matrix = image_data
+                width = target_width
+                height = target_height
+                
+            # Validate pixel matrix
+            self._validate_pixel_pattern(pixel_matrix, width, height)
+            
+            # Prepare input parameters for IoT device action
+            input_params = {
+                "action": "display_pixel_image",
+                "width": width,
+                "height": height,
+                "pixel_data": pixel_matrix,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            # Create CallDeviceActionAsync request
+            req = iot_models.CallDeviceActionAsyncRequest()
+            params = {
+                "ProductId": product_id,
+                "DeviceName": device_name,
+                "ActionId": "display_pixel_image",
+                "InputParams": json.dumps(input_params)
+            }
+            req.from_json_string(json.dumps(params))
+            
+            # Send request to device
+            resp = client.CallDeviceActionAsync(req)
+            
+            result = {
+                "status": "success",
+                "client_token": resp.ClientToken,
+                "call_status": resp.Status,
+                "request_id": resp.RequestId,
+                "product_id": product_id,
+                "device_name": device_name,
+                "action_id": "display_pixel_image",
+                "image_info": {
+                    "width": width,
+                    "height": height,
+                    "total_pixels": width * height
+                },
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            self.logger.info(f"Successfully sent pixel image to device {product_id}/{device_name}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send pixel image: {str(e)}")
+            raise
+
+    def _process_gif_to_frames(self, gif_data: str, target_width: int = 16, target_height: int = 16) -> List[Dict]:
+        """Process GIF data to frame array"""
+        try:
+            if not PIL_AVAILABLE:
+                raise ImportError("PIL not available for GIF processing")
+                
+            # Decode base64 GIF data
+            gif_bytes = base64.b64decode(gif_data)
+            
+            # Open GIF with PIL
+            gif_image = Image.open(io.BytesIO(gif_bytes))
+            
+            frames = []
+            frame_index = 0
+            
+            try:
+                while True:
+                    # Get current frame
+                    frame = gif_image.copy()
+                    
+                    # Convert to RGB if necessary
+                    if frame.mode != 'RGB':
+                        frame = frame.convert('RGB')
+                    
+                    # Resize frame
+                    resized_frame = frame.resize((target_width, target_height), Image.NEAREST)
+                    
+                    # Convert to pixel matrix
+                    pixel_matrix = []
+                    for y in range(target_height):
+                        row = []
+                        for x in range(target_width):
+                            r, g, b = resized_frame.getpixel((x, y))
+                            hex_color = f"#{r:02x}{g:02x}{b:02x}"
+                            row.append(hex_color)
+                        pixel_matrix.append(row)
+                    
+                    # Get frame duration (default 100ms if not specified)
+                    duration = gif_image.info.get('duration', 100)
+                    
+                    frames.append({
+                        "frame_index": frame_index,
+                        "pixel_matrix": pixel_matrix,
+                        "duration": duration
+                    })
+                    
+                    frame_index += 1
+                    gif_image.seek(gif_image.tell() + 1)
+                    
+            except EOFError:
+                # End of frames
+                pass
+            
+            self.logger.info(f"Processed GIF into {len(frames)} frames")
+            return frames
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process GIF: {str(e)}")
+            raise
+
+    def send_gif_animation(self, product_id: str, device_name: str, gif_data: Union[str, List], 
+                          frame_delay: int = 100, loop_count: int = 0, 
+                          target_width: int = 16, target_height: int = 16) -> Dict[str, Any]:
+        """Send GIF pixel animation to device via Tencent Cloud IoT Explorer"""
+        try:
+            # Create IoT client
+            client = self._create_iot_client()
+            
+            # Process GIF data
+            if isinstance(gif_data, str):
+                # If it's base64 encoded GIF, process to frames
+                frames = self._process_gif_to_frames(gif_data, target_width, target_height)
+            else:
+                # If it's already frame array
+                frames = gif_data
+                
+            # Validate frames
+            if not frames:
+                raise ValueError("No frames found in GIF data")
+                
+            # Prepare input parameters for IoT device action
+            input_params = {
+                "action": "display_gif_animation",
+                "frame_count": len(frames),
+                "frames": frames,
+                "frame_delay": frame_delay,
+                "loop_count": loop_count,
+                "width": target_width,
+                "height": target_height,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            # Create CallDeviceActionAsync request
+            req = iot_models.CallDeviceActionAsyncRequest()
+            params = {
+                "ProductId": product_id,
+                "DeviceName": device_name,
+                "ActionId": "display_gif_animation",
+                "InputParams": json.dumps(input_params)
+            }
+            req.from_json_string(json.dumps(params))
+            
+            # Send request to device
+            resp = client.CallDeviceActionAsync(req)
+            
+            result = {
+                "status": "success",
+                "client_token": resp.ClientToken,
+                "call_status": resp.Status,
+                "request_id": resp.RequestId,
+                "product_id": product_id,
+                "device_name": device_name,
+                "action_id": "display_gif_animation",
+                "animation_info": {
+                    "frame_count": len(frames),
+                    "frame_delay": frame_delay,
+                    "loop_count": loop_count,
+                    "width": target_width,
+                    "height": target_height,
+                    "total_pixels": target_width * target_height
+                },
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            self.logger.info(f"Successfully sent GIF animation to device {product_id}/{device_name}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send GIF animation: {str(e)}")
+            raise
+
     def _validate_pixel_pattern(self, pattern: Union[List, str], width: int, height: int) -> bool:
         """Validate pixel art pattern"""
         if isinstance(pattern, str):
@@ -362,31 +562,19 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
     def validate_device_params(self, action: str, params: Dict[str, Any]) -> bool:
         """Validate device operation parameters"""
         validation_rules = {
-            "heat": {
-                "required": ["temperature"],
-                "temperature": {"type": int, "min": 20, "max": 100}
+            "display_pixel_image": {
+                "required": ["pixel_data", "width", "height"],
+                "pixel_data": {"type": list, "description": "2D array of pixel colors"},
+                "width": {"type": int, "min": 1, "max": 128},
+                "height": {"type": int, "min": 1, "max": 128}
             },
-            "display": {
-                "required": ["text"],
-                "text": {"type": str, "max_length": 100},
-                "duration": {"type": int, "min": 1, "max": 3600, "default": 10}
-            },
-            "color": {
-                "required": ["color"],
-                "color": {"type": str, "pattern": r"^#[0-9A-Fa-f]{6}$"},
-                "mode": {"type": str, "choices": ["solid", "blink", "gradient"], "default": "solid"}
-            },
-            "brew": {
-                "required": ["type"],
-                "type": {"type": str, "choices": ["espresso", "americano", "latte", "cappuccino"]},
-                "strength": {"type": str, "choices": ["light", "medium", "strong"], "default": "medium"}
-            },
-            "pixel_art": {
-                "required": ["pattern", "width", "height"],
-                "pattern": {"type": (list, str), "description": "2D array of colors or base64 encoded image"},
+            "display_gif_animation": {
+                "required": ["frames", "width", "height"],
+                "frames": {"type": list, "description": "Array of frame data"},
                 "width": {"type": int, "min": 1, "max": 128},
                 "height": {"type": int, "min": 1, "max": 128},
-                "duration": {"type": int, "min": 1, "max": 3600, "default": 30}
+                "frame_delay": {"type": int, "min": 10, "max": 5000, "default": 100},
+                "loop_count": {"type": int, "min": 0, "max": 1000, "default": 0}
             }
         }
         
@@ -431,14 +619,14 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
                     if "choices" in rule and param_value not in rule["choices"]:
                         raise ValueError(f"Parameter {param_name} invalid value, valid choices: {rule['choices']}")
         
-        # Special validation for pixel_art
-        if action == "pixel_art":
-            pattern = params.get("pattern")
+        # Special validation for display_pixel_image
+        if action == "display_pixel_image":
+            pixel_data = params.get("pixel_data")
             width = params.get("width")
             height = params.get("height")
             
-            if pattern is not None and width is not None and height is not None:
-                self._validate_pixel_pattern(pattern, width, height)
+            if pixel_data is not None and width is not None and height is not None:
+                self._validate_pixel_pattern(pixel_data, width, height)
         
         return True
 
@@ -566,46 +754,268 @@ A4nMgmjVYGpPj7YE6P3bBbRqIWgG
             "warning": "PIL not available, generated pattern from image hash"
         }
 
-    def convert_and_display_image(self, device_id: str, image_data: str, target_width: int = 16, target_height: int = 16, resize_method: str = "nearest", duration: int = 30) -> Dict[str, Any]:
-        """Convert base64 image to pixels and display on device"""
-        try:
-            # Convert image to pixel matrix
-            conversion_result = self.convert_image_to_pixels(image_data, target_width, target_height, resize_method)
-            
-            # Extract pixel matrix
-            pixel_matrix = conversion_result["pixel_matrix"]
-            width = conversion_result["width"]
-            height = conversion_result["height"]
-            
-            # Validate the generated pattern
-            self._validate_pixel_pattern(pixel_matrix, width, height)
-            
-            # Prepare the action parameters
-            action_params = {
-                "pattern": pixel_matrix,
-                "width": width,
-                "height": height,
-                "duration": duration
-            }
-            
-            # Send to device using existing publish_action method
-            result = asyncio.run(self.publish_action(device_id, "pixel_art", action_params))
-            
-            # Add conversion info to result
-            result["conversion_info"] = {
-                "original_size": conversion_result["original_size"],
-                "target_size": {"width": width, "height": height},
-                "resize_method": resize_method,
-                "total_pixels": conversion_result["total_pixels"]
-            }
-            
-            self.logger.info(f"Successfully converted and displayed image on device {device_id}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Failed to convert and display image: {str(e)}")
-            raise
-
-
 # Service instance
 mug_service = MugService()
+
+# FastAPI Application
+try:
+    from fastapi import FastAPI, HTTPException, Query
+    from fastapi.responses import JSONResponse
+    FASTAPI_AVAILABLE = True
+except ImportError:
+    FASTAPI_AVAILABLE = False
+
+if FASTAPI_AVAILABLE:
+    app = FastAPI(title="PixelMug IoT STS Service", version="1.0.0")
+    
+    @app.get("/sts/issue")
+    async def issue_sts_endpoint(
+        pid: str = Query(..., description="Product ID"),
+        dn: str = Query(..., description="Device name"),
+        user_id: str = Query("default_user", description="User ID (for authorization)")
+    ):
+        """
+        Issue Tencent Cloud IoT STS temporary access credentials
+        
+        Args:
+            pid: Product ID
+            dn: Device name  
+            user_id: User ID (for authorization)
+            
+        Returns:
+            JSON containing: tmpSecretId, tmpSecretKey, token, expiration, region
+        """
+        try:
+            # Parameter validation
+            if not pid or not dn:
+                raise HTTPException(
+                    status_code=400, 
+                    detail="Missing parameters: pid (Product ID) and dn (Device name) are required"
+                )
+            
+            # User authorization
+            if not mug_service._authorize(user_id, pid, dn):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"User {user_id} has no permission to access device {pid}/{dn}"
+                )
+            
+            # Issue STS temporary credentials
+            result = mug_service.issue_sts(pid, dn)
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "code": 0,
+                    "message": "STS credentials issued successfully",
+                    "data": result
+                }
+            )
+            
+        except HTTPException:
+            # Re-raise HTTP exceptions
+            raise
+        except ValueError as e:
+            # Parameter error or configuration error
+            raise HTTPException(
+                status_code=400,
+                detail=f"Parameter error: {str(e)}"
+            )
+        except ImportError as e:
+            # SDK missing
+            raise HTTPException(
+                status_code=500,
+                detail=f"Service configuration error: {str(e)}"
+            )
+        except Exception as e:
+            # Other server errors
+            raise HTTPException(
+                status_code=500,
+                detail=f"Internal server error: {str(e)}"
+            )
+    
+    @app.post("/pixel/send")
+    async def send_pixel_image_endpoint(
+        pid: str = Query(..., description="Product ID"),
+        dn: str = Query(..., description="Device name"),
+        image_data: str = Query(..., description="Base64 encoded image or pixel matrix JSON"),
+        width: int = Query(16, description="Target width"),
+        height: int = Query(16, description="Target height"),
+        user_id: str = Query("default_user", description="User ID (for authorization)")
+    ):
+        """
+        Send pixel image to device via Tencent Cloud IoT
+        
+        Args:
+            pid: Product ID
+            dn: Device name
+            image_data: Base64 encoded image or JSON encoded pixel matrix
+            width: Target width (default: 16)
+            height: Target height (default: 16)
+            user_id: User ID (for authorization)
+            
+        Returns:
+            JSON containing device response information
+        """
+        try:
+            # Parameter validation
+            if not pid or not dn or not image_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing required parameters: pid, dn, and image_data are required"
+                )
+            
+            # User authorization
+            if not mug_service._authorize(user_id, pid, dn):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"User {user_id} has no permission to access device {pid}/{dn}"
+                )
+            
+            # Try to parse as JSON first (pixel matrix), otherwise treat as base64 image
+            try:
+                parsed_data = json.loads(image_data)
+                image_input = parsed_data
+            except json.JSONDecodeError:
+                image_input = image_data
+            
+            # Send pixel image to device
+            result = mug_service.send_pixel_image(pid, dn, image_input, width, height)
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "code": 0,
+                    "message": "Pixel image sent successfully",
+                    "data": result
+                }
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send pixel image: {str(e)}"
+            )
+    
+    @app.post("/gif/send")
+    async def send_gif_animation_endpoint(
+        pid: str = Query(..., description="Product ID"),
+        dn: str = Query(..., description="Device name"),
+        gif_data: str = Query(..., description="Base64 encoded GIF or frame array JSON"),
+        frame_delay: int = Query(100, description="Frame delay in milliseconds"),
+        loop_count: int = Query(0, description="Loop count (0 for infinite)"),
+        width: int = Query(16, description="Target width"),
+        height: int = Query(16, description="Target height"),
+        user_id: str = Query("default_user", description="User ID (for authorization)")
+    ):
+        """
+        Send GIF pixel animation to device via Tencent Cloud IoT
+        
+        Args:
+            pid: Product ID
+            dn: Device name
+            gif_data: Base64 encoded GIF or JSON encoded frame array
+            frame_delay: Frame delay in milliseconds (default: 100)
+            loop_count: Loop count, 0 for infinite (default: 0)
+            width: Target width (default: 16)
+            height: Target height (default: 16)
+            user_id: User ID (for authorization)
+            
+        Returns:
+            JSON containing device response information
+        """
+        try:
+            # Parameter validation
+            if not pid or not dn or not gif_data:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing required parameters: pid, dn, and gif_data are required"
+                )
+            
+            # User authorization
+            if not mug_service._authorize(user_id, pid, dn):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"User {user_id} has no permission to access device {pid}/{dn}"
+                )
+            
+            # Try to parse as JSON first (frame array), otherwise treat as base64 GIF
+            try:
+                parsed_data = json.loads(gif_data)
+                gif_input = parsed_data
+            except json.JSONDecodeError:
+                gif_input = gif_data
+            
+            # Send GIF animation to device
+            result = mug_service.send_gif_animation(pid, dn, gif_input, frame_delay, loop_count, width, height)
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "code": 0,
+                    "message": "GIF animation sent successfully",
+                    "data": result
+                }
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send GIF animation: {str(e)}"
+            )
+    
+    @app.get("/health")
+    async def health_check():
+        """Health check endpoint"""
+        return {
+            "status": "healthy",
+            "service": "mcp_pixel_mug_sts",
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "tencent_cloud_sdk": TENCENT_CLOUD_AVAILABLE
+        }
+    
+    @app.get("/")
+    async def root():
+        """Root path, return service information"""
+        return {
+            "service": "PixelMug IoT STS Service",
+            "version": "2.0.0",
+            "description": "Tencent Cloud IoT Device Control and STS Service",
+            "features": [
+                "STS temporary credential issuing",
+                "Pixel image transmission to IoT devices",
+                "GIF animation transmission to IoT devices",
+                "Device authorization and validation"
+            ],
+            "endpoints": {
+                "issue_sts": "/sts/issue?pid=<ProductId>&dn=<DeviceName>&user_id=<UserId>",
+                "send_pixel": "/pixel/send (POST)",
+                "send_gif": "/gif/send (POST)",
+                "health": "/health",
+                "api_docs": "/docs"
+            },
+            "requirements": {
+                "env_vars": {
+                    "IOT_ROLE_ARN": "CAM Role ARN (required)",
+                    "TC_SECRET_ID": "Tencent Cloud SecretId (optional, can be omitted in CVM/TKE environment)",
+                    "TC_SECRET_KEY": "Tencent Cloud SecretKey (optional, can be omitted in CVM/TKE environment)",
+                    "DEFAULT_REGION": "Default region (optional, default: ap-guangzhou)"
+                },
+                "dependencies": {
+                    "tencentcloud-sdk-python-sts": ">=3.0.0",
+                    "tencentcloud-sdk-python-iotexplorer": ">=3.0.0",
+                    "fastapi": ">=0.68.0",
+                    "Pillow": ">=8.0.0 (for image/GIF processing)"
+                }
+            },
+            "device_actions": {
+                "display_pixel_image": "Display static pixel image on device screen",
+                "display_gif_animation": "Display animated GIF on device screen"
+            }
+        }
+else:
+    print("Warning: FastAPI not installed, unable to start HTTP service")

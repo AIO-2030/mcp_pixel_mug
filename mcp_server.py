@@ -47,10 +47,12 @@ class MCPServer:
             # Route to corresponding handler method
             if method == 'help':
                 result = await self._handle_help(params)
-            elif method == 'prepare_mqtt_connection':
-                result = await self._handle_prepare_mqtt_connection(params)
-            elif method == 'publish_action':
-                result = await self._handle_publish_action(params)
+            elif method == 'issue_sts':
+                result = await self._handle_issue_sts(params)
+            elif method == 'send_pixel_image':
+                result = await self._handle_send_pixel_image(params)
+            elif method == 'send_gif_animation':
+                result = await self._handle_send_gif_animation(params)
             elif method == 'convert_image_to_pixels':
                 result = await self._handle_convert_image_to_pixels(params)
             else:
@@ -89,29 +91,53 @@ class MCPServer:
         """Handle help request"""
         return mug_service.get_help()
     
-    async def _handle_prepare_mqtt_connection(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle prepare_mqtt_connection request"""
-        device_id = params.get('device_id')
-        if not device_id:
-            raise ValueError("Missing required parameter: device_id")
+    async def _handle_issue_sts(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle issue_sts request"""
+        product_id = params.get('product_id')
+        device_name = params.get('device_name')
         
-        return mug_service.prepare_mqtt_connection(device_id)
+        if not product_id:
+            raise ValueError("Missing required parameter: product_id")
+        if not device_name:
+            raise ValueError("Missing required parameter: device_name")
+        
+        return mug_service.issue_sts(product_id, device_name)
     
-    async def _handle_publish_action(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Handle publish_action request"""
-        device_id = params.get('device_id')
-        action = params.get('action')
-        action_params = params.get('params', {})
+    async def _handle_send_pixel_image(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle send_pixel_image request"""
+        product_id = params.get('product_id')
+        device_name = params.get('device_name')
+        image_data = params.get('image_data')
+        target_width = params.get('target_width', 16)
+        target_height = params.get('target_height', 16)
         
-        if not device_id:
-            raise ValueError("Missing required parameter: device_id")
-        if not action:
-            raise ValueError("Missing required parameter: action")
+        if not product_id:
+            raise ValueError("Missing required parameter: product_id")
+        if not device_name:
+            raise ValueError("Missing required parameter: device_name")
+        if not image_data:
+            raise ValueError("Missing required parameter: image_data")
         
-        # Validate parameters
-        mug_service.validate_device_params(action, action_params)
+        return mug_service.send_pixel_image(product_id, device_name, image_data, target_width, target_height)
+    
+    async def _handle_send_gif_animation(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle send_gif_animation request"""
+        product_id = params.get('product_id')
+        device_name = params.get('device_name')
+        gif_data = params.get('gif_data')
+        frame_delay = params.get('frame_delay', 100)
+        loop_count = params.get('loop_count', 0)
+        target_width = params.get('target_width', 16)
+        target_height = params.get('target_height', 16)
         
-        return await mug_service.publish_action(device_id, action, action_params)
+        if not product_id:
+            raise ValueError("Missing required parameter: product_id")
+        if not device_name:
+            raise ValueError("Missing required parameter: device_name")
+        if not gif_data:
+            raise ValueError("Missing required parameter: gif_data")
+        
+        return mug_service.send_gif_animation(product_id, device_name, gif_data, frame_delay, loop_count, target_width, target_height)
     
     async def _handle_convert_image_to_pixels(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle convert_image_to_pixels request"""
@@ -152,7 +178,7 @@ async def run_server():
     server = MCPServer()
     
     print("MCP PixelMug server started, waiting for requests...")
-    print("Supported methods: help, prepare_mqtt_connection, publish_action")
+    print("Supported methods: help, issue_sts, send_pixel_image, send_gif_animation, convert_image_to_pixels")
     print("Press Ctrl+C to exit")
     
     try:
