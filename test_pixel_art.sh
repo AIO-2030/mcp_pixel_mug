@@ -1,12 +1,12 @@
 #!/bin/bash
-# Test pixel_art method
+# Test send_pixel_image method
 
-echo "🧪 Testing pixel_art method"
-echo "============================"
+echo "🧪 Testing send_pixel_image method"
+echo "=================================="
 
 # Test case 1: Simple 2x2 pattern
 echo "Test case 1: Simple 2x2 pattern"
-REQUEST1='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "pixel_art", "params": {"pattern": [["#FF0000", "#00FF00"], ["#0000FF", "#FFFFFF"]], "width": 2, "height": 2, "duration": 10}}, "id": 1}'
+REQUEST1='{"jsonrpc": "2.0", "method": "send_pixel_image", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "image_data": [["#FF0000", "#00FF00"], ["#0000FF", "#FFFFFF"]], "target_width": 2, "target_height": 2}, "id": 1}'
 
 echo "Sending request:"
 echo "$REQUEST1"
@@ -33,7 +33,7 @@ echo "----------------------------------------"
 
 # Test case 2: Smiley face example
 echo "Test case 2: 8x8 Smiley face pattern"
-REQUEST2='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "pixel_art", "params": {"pattern": [["#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#000000", "#FFFF00", "#FFFF00", "#000000", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#FFFF00", "#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000", "#FFFF00"], ["#FFFF00", "#FFFF00", "#000000", "#000000", "#000000", "#000000", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000"]], "width": 8, "height": 8, "duration": 20}}, "id": 2}'
+REQUEST2='{"jsonrpc": "2.0", "method": "send_pixel_image", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "image_data": [["#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#000000", "#FFFF00", "#FFFF00", "#000000", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#FFFF00", "#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000", "#FFFF00"], ["#FFFF00", "#FFFF00", "#000000", "#000000", "#000000", "#000000", "#FFFF00", "#FFFF00"], ["#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00"], ["#000000", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#FFFF00", "#000000"]], "target_width": 8, "target_height": 8}, "id": 2}'
 
 echo "Sending request:"
 echo "8x8 Smiley face pattern..."
@@ -58,9 +58,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 3: Base64 encoded image (mock)
+# Test case 3: Base64 encoded image
 echo "Test case 3: Base64 encoded image"
-REQUEST3='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "pixel_art", "params": {"pattern": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQIHWP8DwQMDAxwAEEB5gAAAAoAAf8IAFx+AAA==", "width": 2, "height": 2, "duration": 15}}, "id": 3}'
+REQUEST3='{"jsonrpc": "2.0", "method": "send_pixel_image", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "image_data": "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVQIHWP8DwQMDAxwAEEB5gAAAAoAAf8IAFx+AAA==", "target_width": 2, "target_height": 2}, "id": 3}'
 
 echo "Sending request:"
 echo "$REQUEST3"
@@ -85,9 +85,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 4: Invalid pattern (wrong dimensions)
-echo "Test case 4: Invalid pattern - wrong dimensions"
-REQUEST4='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "pixel_art", "params": {"pattern": [["#FF0000", "#00FF00"]], "width": 2, "height": 2, "duration": 10}}, "id": 4}'
+# Test case 4: Missing required parameters
+echo "Test case 4: Missing required parameters"
+REQUEST4='{"jsonrpc": "2.0", "method": "send_pixel_image", "params": {"product_id": "ABC123DEF", "device_name": "mug_001"}, "id": 4}'
 
 echo "Sending request:"
 echo "$REQUEST4"
@@ -112,9 +112,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 5: Invalid color format
-echo "Test case 5: Invalid color format"
-REQUEST5='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "pixel_art", "params": {"pattern": [["RED", "GREEN"], ["BLUE", "WHITE"]], "width": 2, "height": 2, "duration": 10}}, "id": 5}'
+# Test case 5: Invalid color format in pixel matrix
+echo "Test case 5: Invalid color format in pixel matrix"
+REQUEST5='{"jsonrpc": "2.0", "method": "send_pixel_image", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "image_data": [["RED", "GREEN"], ["BLUE", "WHITE"]], "target_width": 2, "target_height": 2}, "id": 5}'
 
 echo "Sending request:"
 echo "$REQUEST5"
@@ -137,4 +137,4 @@ asyncio.run(test())
 "
 
 echo ""
-echo "✅ pixel_art method test completed"
+echo "✅ send_pixel_image method test completed"

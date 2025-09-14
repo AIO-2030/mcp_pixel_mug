@@ -1,12 +1,12 @@
 #!/bin/bash
-# Test prepare_mqtt_connection method
+# Test issue_sts method
 
-echo "🧪 Testing prepare_mqtt_connection method"
-echo "===================================="
+echo "🧪 Testing issue_sts method"
+echo "=========================="
 
 # Test case 1: Normal device
 echo "Test case 1: Normal device mug_001"
-REQUEST1='{"jsonrpc": "2.0", "method": "prepare_mqtt_connection", "params": {"device_id": "mug_001"}, "id": 1}'
+REQUEST1='{"jsonrpc": "2.0", "method": "issue_sts", "params": {"product_id": "ABC123DEF", "device_name": "mug_001"}, "id": 1}'
 
 echo "Sending request:"
 echo "$REQUEST1"
@@ -31,9 +31,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 2: Unregistered device
-echo "Test case 2: Unregistered device mug_999"
-REQUEST2='{"jsonrpc": "2.0", "method": "prepare_mqtt_connection", "params": {"device_id": "mug_999"}, "id": 2}'
+# Test case 2: Different device
+echo "Test case 2: Different device mug_002"
+REQUEST2='{"jsonrpc": "2.0", "method": "issue_sts", "params": {"product_id": "ABC123DEF", "device_name": "mug_002"}, "id": 2}'
 
 echo "Sending request:"
 echo "$REQUEST2"
@@ -58,9 +58,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 3: Missing parameter
-echo "Test case 3: Missing device_id parameter"
-REQUEST3='{"jsonrpc": "2.0", "method": "prepare_mqtt_connection", "params": {}, "id": 3}'
+# Test case 3: Missing required parameters
+echo "Test case 3: Missing required parameters"
+REQUEST3='{"jsonrpc": "2.0", "method": "issue_sts", "params": {}, "id": 3}'
 
 echo "Sending request:"
 echo "$REQUEST3"
@@ -83,4 +83,4 @@ asyncio.run(test())
 "
 
 echo ""
-echo "✅ prepare_mqtt_connection method test completed"
+echo "✅ issue_sts method test completed"

@@ -1,12 +1,12 @@
 #!/bin/bash
-# Test publish_action method
+# Test send_gif_animation method
 
-echo "🧪 Testing publish_action method"
-echo "============================="
+echo "🧪 Testing send_gif_animation method"
+echo "==================================="
 
-# Test case 1: Heat operation
-echo "Test case 1: Heat operation"
-REQUEST1='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "heat", "params": {"temperature": 60}}, "id": 1}'
+# Test case 1: Simple GIF animation
+echo "Test case 1: Simple GIF animation"
+REQUEST1='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "gif_data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "frame_delay": 100, "loop_count": 0, "target_width": 16, "target_height": 16}, "id": 1}'
 
 echo "Sending request:"
 echo "$REQUEST1"
@@ -31,9 +31,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 2: Display information
-echo "Test case 2: Display information"
-REQUEST2='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "display", "params": {"text": "Hello PixelMug!", "duration": 30}}, "id": 2}'
+# Test case 2: GIF with custom frame delay
+echo "Test case 2: GIF with custom frame delay"
+REQUEST2='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "gif_data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "frame_delay": 200, "loop_count": 3, "target_width": 8, "target_height": 8}, "id": 2}'
 
 echo "Sending request:"
 echo "$REQUEST2"
@@ -58,9 +58,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 3: Color change operation
-echo "Test case 3: Color change operation"
-REQUEST3='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "color", "params": {"color": "#FF5733", "mode": "gradient"}}, "id": 3}'
+# Test case 3: Frame array format
+echo "Test case 3: Frame array format"
+REQUEST3='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "gif_data": [{"frame_index": 0, "pixel_matrix": [["#FF0000", "#00FF00"], ["#0000FF", "#FFFFFF"]], "duration": 100}, {"frame_index": 1, "pixel_matrix": [["#FFFFFF", "#000000"], ["#FFFF00", "#FF00FF"]], "duration": 100}], "frame_delay": 150, "loop_count": 1, "target_width": 2, "target_height": 2}, "id": 3}'
 
 echo "Sending request:"
 echo "$REQUEST3"
@@ -85,9 +85,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 4: Brewing operation
-echo "Test case 4: Brewing operation"
-REQUEST4='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "brew", "params": {"type": "espresso", "strength": "strong"}}, "id": 4}'
+# Test case 4: Missing required parameters
+echo "Test case 4: Missing required parameters"
+REQUEST4='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001"}, "id": 4}'
 
 echo "Sending request:"
 echo "$REQUEST4"
@@ -112,9 +112,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 5: Invalid operation
-echo "Test case 5: Invalid operation"
-REQUEST5='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "invalid_action", "params": {}}, "id": 5}'
+# Test case 5: Invalid frame delay
+echo "Test case 5: Invalid frame delay"
+REQUEST5='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "gif_data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "frame_delay": 5000, "loop_count": 0, "target_width": 16, "target_height": 16}, "id": 5}'
 
 echo "Sending request:"
 echo "$REQUEST5"
@@ -139,9 +139,9 @@ asyncio.run(test())
 echo ""
 echo "----------------------------------------"
 
-# Test case 6: Parameter validation failure
-echo "Test case 6: Temperature parameter out of range"
-REQUEST6='{"jsonrpc": "2.0", "method": "publish_action", "params": {"device_id": "mug_001", "action": "heat", "params": {"temperature": 150}}, "id": 6}'
+# Test case 6: Invalid loop count
+echo "Test case 6: Invalid loop count"
+REQUEST6='{"jsonrpc": "2.0", "method": "send_gif_animation", "params": {"product_id": "ABC123DEF", "device_name": "mug_001", "gif_data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "frame_delay": 100, "loop_count": 1001, "target_width": 16, "target_height": 16}, "id": 6}'
 
 echo "Sending request:"
 echo "$REQUEST6"
@@ -164,4 +164,4 @@ asyncio.run(test())
 "
 
 echo ""
-echo "✅ publish_action method test completed"
+echo "✅ send_gif_animation method test completed"
