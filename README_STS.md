@@ -425,6 +425,418 @@ curl -I https://sts.tencentcloudapi.com
 curl -I https://iotexplorer.tencentcloudapi.com
 ```
 
+## IoT COS Asset Delivery Protocol
+
+This section describes the protocol for delivering assets (pixel images and GIF animations) to IoT devices via Tencent Cloud COS (Cloud Object Storage).
+
+### Overview
+
+The system uses a two-phase delivery approach:
+1. **Asset Upload**: Assets are uploaded to COS with pre-signed URLs
+2. **Device Notification**: IoT devices receive asset metadata via MQTT/Shadow
+
+### Asset Storage Structure
+
+#### COS Key Pattern
+```
+pmug/{deviceName}/{YYYYMM}/{assetId}-{sha8}.{ext}
+```
+
+**Examples:**
+- `pmug/mug_001/202412/asset_1740990123-a1b2c3d4.json`
+- `pmug/mug_001/202412/asset_1740990124-e5f6g7h8.gif`
+
+#### Content Types
+- **Pixel JSON**: `application/vnd.pmug.pixel+json`
+- **GIF Animation**: `image/gif`
+
+#### Object Metadata
+```json
+{
+  "x-cos-meta-sha256": "a1b2c3d4e5f6...",
+  "x-cos-meta-width": "32",
+  "x-cos-meta-height": "16",
+  "x-cos-meta-frames": "5",
+  "x-cos-meta-asset-id": "asset_1740990123",
+  "x-cos-meta-device-name": "mug_001",
+  "x-cos-meta-product-id": "ABC123DEF"
+}
+```
+
+#### Cache Headers
+```
+Cache-Control: public, max-age=31536000, immutable
+Storage-Class: STANDARD
+```
+
+### IoT Device Payload Format
+
+#### MQTT Topic
+```
+$shadow/operation/result/{productId}/{deviceName}
+```
+
+#### Payload Structure
+```json
+{
+  "method": "control.push_asset",
+  "clientToken": "cmd_1740990123",
+  "params": {
+    "assetId": "asset_abc123",
+    "type": "application/vnd.pmug.pixel+json",
+    "url": "https://pixelmug-assets.cos.ap-guangzhou.myqcloud.com/pmug/mug_001/202412/asset_abc123-a1b2c3d4.json?sign=...",
+    "bytes": 15360,
+    "hash": "sha256:a1b2c3d4e5f6...",
+    "width": 32,
+    "height": 16,
+    "loop": false,
+    "expiresAt": 1740990423,
+    "nonce": "d4b1..8f",
+    "ts": 1740990123
+  }
+}
+```
+
+#### Field Descriptions
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `method` | string | Always "control.push_asset" |
+| `clientToken` | string | Unique command identifier |
+| `assetId` | string | Unique asset identifier |
+| `type` | string | MIME type of the asset |
+| `url` | string | Pre-signed COS URL for download |
+| `bytes` | integer | Size of the asset in bytes |
+| `hash` | string | SHA256 hash with "sha256:" prefix |
+| `width` | integer | Display width in pixels |
+| `height` | integer | Display height in pixels |
+| `loop` | boolean | Whether to loop (for animations) |
+| `expiresAt` | integer | URL expiration timestamp (Unix) |
+| `nonce` | string | Security nonce (8 hex chars) |
+| `ts` | integer | Command timestamp (Unix) |
+
+### Asset Data Formats
+
+#### Pixel JSON Format
+```json
+{
+  "kind": "pixel-json",
+  "width": 32,
+  "height": 16,
+  "pixel_data": [
+    ["#FF0000", "#00FF00", "#0000FF", "#FFFFFF"],
+    ["#FFFF00", "#FF00FF", "#00FFFF", "#000000"],
+    ["#800000", "#008000", "#000080", "#808080"],
+    ["#FFA500", "#800080", "#008080", "#C0C0C0"]
+  ],
+  "timestamp": "2024-12-20T10:30:00Z"
+}
+```
+
+#### Palette-Based Format
+```json
+{
+  "kind": "pixel-json",
+  "title": "sample_image",
+  "description": "Converted from sample_image.jpg",
+  "width": 32,
+  "height": 32,
+  "palette": [
+    "#ffffff", "#ff0000", "#00ff00", "#0000ff",
+    "#ffff00", "#ff00ff", "#00ffff", "#808080",
+    "#000000", "#ffa500", "#800080", "#008000",
+    "#ffc0cb", "#a52a2a", "#c0c0c0", "#808000"
+  ],
+  "pixels": [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  ],
+  "timestamp": "2024-12-20T10:30:00Z"
+}
+```
+
+#### GIF Animation Format
+```json
+{
+  "kind": "gif",
+  "frame_count": 5,
+  "frames": [
+    {
+      "frame_index": 0,
+      "pixel_matrix": [
+        ["#FF0000", "#00FF00"],
+        ["#0000FF", "#FFFFFF"]
+      ],
+      "duration": 100
+    },
+    {
+      "frame_index": 1,
+      "pixel_matrix": [
+        ["#00FF00", "#FF0000"],
+        ["#FFFFFF", "#0000FF"]
+      ],
+      "duration": 100
+    }
+  ],
+  "frame_delay": 100,
+  "loop_count": 0,
+  "width": 16,
+  "height": 16,
+  "timestamp": "2024-12-20T10:30:00Z"
+}
+```
+
+### Device Implementation Guide
+
+#### 1. MQTT Message Handling
+
+```c
+// C/C++ example
+typedef struct {
+    char assetId[64];
+    char type[64];
+    char url[512];
+    int bytes;
+    char hash[128];
+    int width;
+    int height;
+    bool loop;
+    long expiresAt;
+    char nonce[16];
+    long ts;
+} AssetPayload;
+
+typedef struct {
+    char title[64];
+    int width;
+    int height;
+    char palette[16][8];  // Up to 16 colors, each 7 chars + null
+    int palette_size;
+    int pixels[32][32];   // Support up to 32x32
+} PaletteAsset;
+
+void handle_asset_message(const char* topic, const char* payload) {
+    cJSON* json = cJSON_Parse(payload);
+    cJSON* method = cJSON_GetObjectItem(json, "method");
+    
+    if (strcmp(method->valuestring, "control.push_asset") == 0) {
+        cJSON* params = cJSON_GetObjectItem(json, "params");
+        AssetPayload asset = parse_asset_payload(params);
+        
+        // Download and display asset
+        download_and_display_asset(&asset);
+    }
+    
+    cJSON_Delete(json);
+}
+
+// Parse palette-based asset data
+void parse_palette_asset(cJSON* asset_data, PaletteAsset* palette_asset) {
+    cJSON* title = cJSON_GetObjectItem(asset_data, "title");
+    cJSON* width = cJSON_GetObjectItem(asset_data, "width");
+    cJSON* height = cJSON_GetObjectItem(asset_data, "height");
+    cJSON* palette = cJSON_GetObjectItem(asset_data, "palette");
+    cJSON* pixels = cJSON_GetObjectItem(asset_data, "pixels");
+    
+    strcpy(palette_asset->title, title->valuestring);
+    palette_asset->width = width->valueint;
+    palette_asset->height = height->valueint;
+    
+    // Parse palette
+    palette_asset->palette_size = cJSON_GetArraySize(palette);
+    for (int i = 0; i < palette_asset->palette_size && i < 16; i++) {
+        cJSON* color = cJSON_GetArrayItem(palette, i);
+        strcpy(palette_asset->palette[i], color->valuestring);
+    }
+    
+    // Parse pixels
+    for (int y = 0; y < palette_asset->height; y++) {
+        cJSON* row = cJSON_GetArrayItem(pixels, y);
+        for (int x = 0; x < palette_asset->width; x++) {
+            cJSON* pixel = cJSON_GetArrayItem(row, x);
+            palette_asset->pixels[y][x] = pixel->valueint;
+        }
+    }
+}
+```
+
+#### 2. Asset Download
+
+```c
+// Download asset from COS URL
+int download_asset(const char* url, char* buffer, int max_size) {
+    HTTPClient http;
+    http.begin(url);
+    
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK) {
+        int len = http.getSize();
+        if (len <= max_size) {
+            http.getString().toCharArray(buffer, max_size);
+            return len;
+        }
+    }
+    
+    http.end();
+    return -1;
+}
+```
+
+#### 3. Asset Validation
+
+```c
+// Validate asset integrity
+bool validate_asset(const char* data, int len, const char* expected_hash) {
+    char hash[65];
+    sha256_hash(data, len, hash);
+    
+    // Compare with expected hash (skip "sha256:" prefix)
+    return strcmp(hash, expected_hash + 7) == 0;
+}
+```
+
+#### 4. Display Implementation
+
+```c
+// Display pixel matrix on LED screen
+void display_pixel_matrix(int width, int height, char pixel_data[][8]) {
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            uint32_t color = hex_to_rgb(pixel_data[y][x]);
+            set_pixel(x, y, color);
+        }
+    }
+    refresh_display();
+}
+
+// Display palette-based pixel matrix
+void display_palette_pixel_matrix(int width, int height, int pixel_indices[][32], char palette[][8], int palette_size) {
+    for (int y = 0; y < height; y++) {
+        for (int x = 0; x < width; x++) {
+            int color_index = pixel_indices[y][x];
+            if (color_index >= 0 && color_index < palette_size) {
+                uint32_t color = hex_to_rgb(palette[color_index]);
+                set_pixel(x, y, color);
+            }
+        }
+    }
+    refresh_display();
+}
+
+// Display GIF animation
+void display_gif_animation(GifAnimation* gif) {
+    for (int frame = 0; frame < gif->frame_count; frame++) {
+        display_pixel_matrix(gif->width, gif->height, gif->frames[frame].pixel_matrix);
+        delay(gif->frames[frame].duration);
+        
+        if (gif->loop_count > 0 && frame == gif->frame_count - 1) {
+            frame = -1; // Reset to beginning
+            gif->loop_count--;
+        }
+    }
+}
+```
+
+### Security Considerations
+
+#### 1. URL Validation
+- Always validate the URL domain (should be `*.cos.*.myqcloud.com`)
+- Check URL expiration time before downloading
+- Verify nonce to prevent replay attacks
+
+#### 2. Hash Verification
+- Always verify SHA256 hash of downloaded content
+- Reject assets with invalid hashes
+- Implement timeout for download operations
+
+#### 3. Memory Management
+- Limit maximum asset size (e.g., 64KB)
+- Implement proper memory cleanup
+- Handle out-of-memory conditions gracefully
+
+### Error Handling
+
+#### Common Error Scenarios
+
+1. **Download Timeout**
+```c
+#define DOWNLOAD_TIMEOUT_MS 10000
+// Implement timeout handling in download function
+```
+
+2. **Invalid Hash**
+```c
+if (!validate_asset(data, len, expected_hash)) {
+    log_error("Asset hash verification failed");
+    return -1;
+}
+```
+
+3. **URL Expired**
+```c
+if (current_timestamp() > asset->expiresAt) {
+    log_error("Asset URL has expired");
+    return -1;
+}
+```
+
+4. **Memory Insufficient**
+```c
+if (asset_size > MAX_ASSET_SIZE) {
+    log_error("Asset too large: %d bytes", asset_size);
+    return -1;
+}
+```
+
+### Performance Optimization
+
+#### 1. Caching Strategy
+- Cache frequently used assets locally
+- Implement LRU cache for memory management
+- Use asset hash as cache key
+
+#### 2. Display Optimization
+- Pre-process pixel data for faster rendering
+- Use DMA for bulk pixel updates
+- Implement double buffering for smooth animations
+
+#### 3. Network Optimization
+- Use HTTP/2 if supported
+- Implement connection pooling
+- Compress asset data when possible
+
+### Testing and Debugging
+
+#### 1. Unit Testing
+```c
+void test_asset_parsing() {
+    const char* test_payload = "{\"method\":\"control.push_asset\",\"params\":{...}}";
+    AssetPayload asset = parse_asset_payload(test_payload);
+    
+    assert(strcmp(asset.assetId, "asset_123") == 0);
+    assert(asset.width == 16);
+    assert(asset.height == 16);
+}
+```
+
+#### 2. Integration Testing
+- Test with various asset sizes
+- Verify hash validation
+- Test error conditions
+- Validate display output
+
+#### 3. Debug Logging
+```c
+#define DEBUG_LEVEL 1
+
+#if DEBUG_LEVEL >= 1
+    #define log_debug(fmt, ...) printf("[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+    #define log_debug(fmt, ...)
+#endif
+```
+
 ## 相关文档
 
 - [腾讯云STS文档](https://cloud.tencent.com/document/product/598)

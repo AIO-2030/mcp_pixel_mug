@@ -1,15 +1,18 @@
 # 🎨 PixelMug MCP Server
 
-A Model Context Protocol (MCP) server for controlling PixelMug smart mugs via Tencent Cloud IoT Explorer. This service provides pixel art display, GIF animation, and image conversion capabilities for IoT-connected smart mugs.
+A Model Context Protocol (MCP) server for controlling PixelMug smart mugs via Tencent Cloud IoT Explorer. This service provides pixel art display, GIF animation, image conversion, and cloud storage capabilities for IoT-connected smart mugs with ALAYA network optimization.
 
 ## ✨ Features
 
 - **🎨 Pixel Art Display**: Send custom pixel patterns to mug displays
 - **🎬 GIF Animation**: Display animated GIFs with frame control
 - **🖼️ Image Conversion**: Convert any image to pixel art format
+- **🎨 Palette Format**: Support for efficient palette-based pixel art (up to 16 colors)
 - **☁️ Tencent Cloud IoT**: Secure device communication via IoT Explorer
+- **📦 COS Integration**: Cloud storage with pre-signed URLs for asset delivery
 - **🔐 STS Authentication**: Temporary credentials for secure access
 - **📱 MCP Protocol**: Standardized JSON-RPC interface
+- **🌐 ALAYA Network**: Optimized for ALAYA network transmission
 
 ## 🚀 Quick Start
 
@@ -35,6 +38,7 @@ pip install -r requirements.txt
 3. Set environment variables:
 ```bash
 export IOT_ROLE_ARN="qcs::cam::uin/123456789:role/IoTDeviceRole"
+export COS_BUCKET="pixelmug-assets"               # COS bucket name
 export TC_SECRET_ID="AKID_PLACEHOLDER_SECRET_ID"  # Optional in CVM/TKE
 export TC_SECRET_KEY="PLACEHOLDER_SECRET_KEY"     # Optional in CVM/TKE
 export DEFAULT_REGION="ap-guangzhou"
@@ -71,8 +75,8 @@ The MCP server supports the following JSON-RPC methods:
   "jsonrpc": "2.0",
   "result": {
     "service": "mcp_pixel_mug",
-    "version": "2.0.0",
-    "description": "PixelMug Smart Mug Tencent Cloud IoT Control Interface",
+    "version": "2.1.0",
+    "description": "PixelMug Smart Mug Tencent Cloud IoT Control Interface with COS Integration and ALAYA Network Support",
     "methods": [
       {
         "name": "help",
@@ -89,24 +93,30 @@ The MCP server supports the following JSON-RPC methods:
       },
       {
         "name": "send_pixel_image",
-        "description": "Send pixel image to device via Tencent Cloud IoT",
+        "description": "Send pixel image to device via Tencent Cloud IoT with optional COS upload",
         "params": {
           "product_id": "Product ID",
           "device_name": "Device name",
-          "image_data": "Base64 encoded image or pixel matrix",
+          "image_data": "Base64 encoded image, pixel matrix, or palette format",
           "target_width": "Target width (optional, default: 16)",
-          "target_height": "Target height (optional, default: 16)"
+          "target_height": "Target height (optional, default: 16)",
+          "use_cos": "Enable COS upload (optional, default: True)",
+          "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)"
         }
       },
       {
         "name": "send_gif_animation",
-        "description": "Send GIF pixel animation to device via Tencent Cloud IoT",
+        "description": "Send GIF pixel animation to device via Tencent Cloud IoT with optional COS upload",
         "params": {
           "product_id": "Product ID",
           "device_name": "Device name",
-          "gif_data": "Base64 encoded GIF or frame array",
+          "gif_data": "Base64 encoded GIF, frame array, or palette format",
           "frame_delay": "Delay between frames in ms (optional, default: 100)",
-          "loop_count": "Number of loops (optional, default: 0 for infinite)"
+          "loop_count": "Number of loops (optional, default: 0 for infinite)",
+          "target_width": "Target width (optional, default: 16)",
+          "target_height": "Target height (optional, default: 16)",
+          "use_cos": "Enable COS upload (optional, default: True)",
+          "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)"
         }
       },
       {
@@ -143,7 +153,8 @@ The MCP server supports the following JSON-RPC methods:
     "pixel_art_formats": {
       "2d_array": "Array of arrays with hex colors: [[\"#FF0000\", \"#00FF00\"], [\"#0000FF\", \"#FFFFFF\"]]",
       "rgb_array": "Array of arrays with RGB tuples: [[[255,0,0], [0,255,0]], [[0,0,255], [255,255,255]]]",
-      "base64": "Base64 encoded image data (PNG/JPEG)"
+      "base64": "Base64 encoded image data (PNG/JPEG)",
+      "palette_based": "Palette-based format with color indices: {\"palette\": [\"#ffffff\", \"#ff0000\"], \"pixels\": [[0,1], [1,0]]}"
     }
   },
   "id": 1
@@ -342,6 +353,29 @@ Pixel patterns as arrays of hex color codes:
 ]
 ```
 
+### 🎨 Palette-Based Format (ALAYA Network Optimized)
+
+Efficient format using color indices for network transmission:
+
+```json
+{
+  "title": "sample_image",
+  "description": "Converted from sample_image.jpg",
+  "width": 32,
+  "height": 32,
+  "palette": [
+    "#ffffff", "#ff0000", "#00ff00", "#0000ff",
+    "#ffff00", "#ff00ff", "#00ffff", "#808080",
+    "#000000", "#ffa500", "#800080", "#008000",
+    "#ffc0cb", "#a52a2a", "#c0c0c0", "#808000"
+  ],
+  "pixels": [
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+  ]
+}
+```
+
 ### 🖼️ Base64 Image Format
 
 Convert any image to pixel art:
@@ -354,18 +388,87 @@ Convert any image to pixel art:
 }
 ```
 
-### 🎬 GIF Animation Format
+### 🎬 GIF Animation Formats
 
-Animated pixel art with frame control:
+#### Traditional Frame Array
+```json
+[
+  {
+    "frame_index": 0,
+    "pixel_matrix": [
+      ["#FF0000", "#00FF00"],
+      ["#0000FF", "#FFFFFF"]
+    ],
+    "duration": 100
+  }
+]
+```
 
+#### Palette-Based Animation
 ```json
 {
-  "gif_data": "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
-  "frame_delay": 100,
-  "loop_count": 0,
-  "target_width": 16,
-  "target_height": 16
+  "title": "animated_heart",
+  "width": 8,
+  "height": 8,
+  "palette": ["#000000", "#ff0000", "#ffffff"],
+  "frame_delay": 200,
+  "loop_count": 3,
+  "frames": [
+    {
+      "pixels": [
+        [0, 0, 0, 0, 0, 0, 0, 0],
+        [0, 1, 1, 0, 0, 1, 1, 0]
+      ],
+      "duration": 200
+    }
+  ]
 }
+```
+
+## 📦 COS Integration
+
+### Cloud Storage Features
+
+- **Asset Upload**: Automatic upload of pixel art and GIF animations to COS
+- **Pre-signed URLs**: Generate secure, time-limited download links
+- **Metadata Storage**: Rich metadata for auditing and debugging
+- **Cache Optimization**: Immutable objects with long-term caching
+- **Fallback Support**: Automatic fallback to direct transmission if COS fails
+
+### COS Key Pattern
+
+```
+pmug/{deviceName}/{YYYYMM}/{assetId}-{sha8}.{ext}
+```
+
+Examples:
+- `pmug/mug_001/202412/asset_1740990123-a1b2c3d4.json`
+- `pmug/mug_001/202412/asset_1740990124-e5f6g7h8.gif`
+
+### Content Types
+
+- **Pixel JSON**: `application/vnd.pmug.pixel+json`
+- **GIF Animation**: `image/gif`
+
+### Usage
+
+```python
+# Enable COS upload (default)
+result = mug_service.send_pixel_image(
+    product_id="ABC123DEF",
+    device_name="mug_001",
+    image_data=pixel_matrix,
+    use_cos=True,
+    ttl_sec=900  # 15 minutes
+)
+
+# Disable COS (direct transmission)
+result = mug_service.send_pixel_image(
+    product_id="ABC123DEF",
+    device_name="mug_001",
+    image_data=pixel_matrix,
+    use_cos=False
+)
 ```
 
 ## 🎯 Pixel Art Examples
@@ -398,6 +501,58 @@ Animated pixel art with frame control:
 ]
 ```
 
+### 🎨 Palette-Based Smiley Face (4x4)
+```json
+{
+  "title": "smiley_4x4",
+  "width": 4,
+  "height": 4,
+  "palette": ["#000000", "#FFFF00", "#FFFFFF"],
+  "pixels": [
+    [0, 1, 1, 0],
+    [1, 1, 1, 1],
+    [1, 0, 0, 1],
+    [0, 1, 1, 0]
+  ]
+}
+```
+
+### 🎬 Palette-Based Animation
+```json
+{
+  "title": "blinking_heart",
+  "width": 6,
+  "height": 6,
+  "palette": ["#000000", "#ff0000", "#ffffff"],
+  "frame_delay": 500,
+  "loop_count": 3,
+  "frames": [
+    {
+      "pixels": [
+        [0, 0, 0, 0, 0, 0],
+        [0, 1, 1, 0, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [1, 1, 1, 1, 1, 1],
+        [0, 1, 1, 1, 1, 0],
+        [0, 0, 1, 1, 0, 0]
+      ],
+      "duration": 500
+    },
+    {
+      "pixels": [
+        [0, 0, 0, 0, 0, 0],
+        [0, 2, 2, 0, 2, 2],
+        [2, 2, 2, 2, 2, 2],
+        [2, 2, 2, 2, 2, 2],
+        [0, 2, 2, 2, 2, 0],
+        [0, 0, 2, 2, 0, 0]
+      ],
+      "duration": 500
+    }
+  ]
+}
+```
+
 ## ☁️ Tencent Cloud IoT Integration
 
 ### Device Action Protocol
@@ -406,11 +561,11 @@ The service uses Tencent Cloud IoT Explorer for device communication:
 
 - **Action**: `display_pixel_image` - Display static pixel image
 - **Action**: `display_gif_animation` - Display animated GIF
+- **Action**: `control.push_asset` - Push asset via COS with pre-signed URLs
 
-### Message Format
+### Message Formats
 
-Device actions follow this standardized format:
-
+#### Direct Transmission
 ```json
 {
   "action": "display_pixel_image",
@@ -424,12 +579,34 @@ Device actions follow this standardized format:
 }
 ```
 
+#### COS Asset Delivery
+```json
+{
+  "method": "control.push_asset",
+  "clientToken": "cmd_1740990123",
+  "params": {
+    "assetId": "asset_abc123",
+    "type": "application/vnd.pmug.pixel+json",
+    "url": "https://pixelmug-assets.cos.ap-guangzhou.myqcloud.com/pmug/mug_001/202412/asset_abc123-a1b2c3d4.json?sign=...",
+    "bytes": 15360,
+    "hash": "sha256:a1b2c3d4e5f6...",
+    "width": 32,
+    "height": 16,
+    "loop": false,
+    "expiresAt": 1740990423,
+    "nonce": "d4b1..8f",
+    "ts": 1740990123
+  }
+}
+```
+
 ### Security & Authentication
 
 - **Protocol**: HTTPS API calls to Tencent Cloud IoT Explorer
 - **Authentication**: STS temporary credentials with limited permissions
 - **Authorization**: Device-specific access control via session policies
 - **Encryption**: TLS 1.2+ with end-to-end encryption
+- **COS Security**: Pre-signed URLs with expiration and nonce validation
 
 ### Environment Configuration
 
@@ -437,9 +614,20 @@ Required environment variables:
 
 ```bash
 export IOT_ROLE_ARN="qcs::cam::uin/123456789:role/IoTDeviceRole"
+export COS_BUCKET="pixelmug-assets"               # COS bucket name
 export TC_SECRET_ID="AKID_PLACEHOLDER_SECRET_ID"  # Optional in CVM/TKE
 export TC_SECRET_KEY="PLACEHOLDER_SECRET_KEY"     # Optional in CVM/TKE
 export DEFAULT_REGION="ap-guangzhou"
+```
+
+### Dependencies
+
+```bash
+pip install tencentcloud-sdk-python-sts
+pip install tencentcloud-sdk-python-iotexplorer
+pip install tencentcloud-sdk-python-cos
+pip install fastapi
+pip install Pillow
 ```
 
 ## 🧪 Testing & Validation
@@ -455,6 +643,10 @@ Run the complete test suite:
 ./test_send_pixel_image.sh       # Test pixel image sending
 ./test_send_gif_animation.sh     # Test GIF animation sending
 ./test_convert_image.sh          # Test image conversion
+
+# New feature tests
+python test_cos_integration.py   # Test COS integration
+python test_palette_format.py    # Test palette format support
 
 # All tests via build script
 python build.py test
@@ -504,6 +696,12 @@ Check the `examples/` directory for:
 - `pixel_art_demo.py` - Pixel art creation examples
 - `image_conversion_demo.py` - Image processing examples
 - `bluetooth_bridge.py` - Bluetooth integration
+
+### New Documentation
+
+- `README_STS.md` - Complete STS and device protocol documentation
+- `GIF_FORMATS.md` - Detailed GIF format support guide
+- `INTEGRATION_SUMMARY.md` - COS integration implementation summary
 
 ## 🤝 Contributing
 

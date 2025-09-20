@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 MCP PixelMug Server Implementation
-Provides MCP interface compliant with AIO JSON-RPC standard
+Provides MCP interface for PixelMug IoT device control
 """
 
 import json

@@ -13,6 +13,7 @@ import base64
 import re
 import io
 import os
+import hashlib
 from typing import Dict, Any, Optional, Union, List
 
 # 腾讯云STS相关依赖
@@ -31,6 +32,13 @@ try:
     IOT_EXPLORER_AVAILABLE = True
 except ImportError:
     IOT_EXPLORER_AVAILABLE = False
+
+# 腾讯云COS相关依赖
+try:
+    from tencentcloud.cos import CosConfig, CosS3Client
+    COS_AVAILABLE = True
+except ImportError:
+    COS_AVAILABLE = False
 
 try:
     from PIL import Image
@@ -67,24 +75,30 @@ class MugService:
                 },
                 {
                     "name": "send_pixel_image",
-                    "description": "Send pixel image to device via Tencent Cloud IoT",
+                    "description": "Send pixel image to device via Tencent Cloud IoT with optional COS upload",
                     "params": {
                         "product_id": "Product ID",
                         "device_name": "Device name",
                         "image_data": "Base64 encoded image or pixel matrix",
                         "target_width": "Target width (optional, default: 16)",
-                        "target_height": "Target height (optional, default: 16)"
+                        "target_height": "Target height (optional, default: 16)",
+                        "use_cos": "Enable COS upload (optional, default: True)",
+                        "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)"
                     }
                 },
                 {
                     "name": "send_gif_animation",
-                    "description": "Send GIF pixel animation to device via Tencent Cloud IoT",
+                    "description": "Send GIF pixel animation to device via Tencent Cloud IoT with optional COS upload",
                     "params": {
                         "product_id": "Product ID",
                         "device_name": "Device name", 
                         "gif_data": "Base64 encoded GIF or frame array",
                         "frame_delay": "Delay between frames in ms (optional, default: 100)",
-                        "loop_count": "Number of loops (optional, default: 0 for infinite)"
+                        "loop_count": "Number of loops (optional, default: 0 for infinite)",
+                        "target_width": "Target width (optional, default: 16)",
+                        "target_height": "Target height (optional, default: 16)",
+                        "use_cos": "Enable COS upload (optional, default: True)",
+                        "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)"
                     }
                 },
                 {
@@ -106,7 +120,8 @@ class MugService:
             "pixel_art_formats": {
                 "2d_array": "Array of arrays with hex colors: [[\"#FF0000\", \"#00FF00\"], [\"#0000FF\", \"#FFFFFF\"]]",
                 "rgb_array": "Array of arrays with RGB tuples: [[[255,0,0], [0,255,0]], [[0,0,255], [255,255,255]]]",
-                "base64": "Base64 encoded image data (PNG/JPEG)"
+                "base64": "Base64 encoded image data (PNG/JPEG)",
+                "palette_based": "Palette-based format with color indices: {\"palette\": [\"#ffffff\", \"#ff0000\"], \"pixels\": [[0,1], [1,0]]}"
             }
         }
     
@@ -193,7 +208,7 @@ class MugService:
             raise ValueError("Unable to get Tencent Cloud credentials, please check environment variables TC_SECRET_ID/TC_SECRET_KEY or ensure running on CVM/TKE with bound role")
     
     def _build_session_policy(self, product_id: str, device_name: str) -> str:
-        """Build session policy to limit permissions to single device UpdateDeviceShadow and PublishMessage operations"""
+        """Build session policy to limit permissions to single device and COS operations"""
         policy = {
             "version": "2.0",
             "statement": [
@@ -201,10 +216,21 @@ class MugService:
                     "effect": "allow",
                     "action": [
                         "iotcloud:UpdateDeviceShadow",
-                        "iotcloud:PublishMessage"
+                        "iotcloud:PublishMessage",
+                        "iotcloud:CallDeviceActionAsync"
                     ],
                     "resource": [
                         f"qcs::iotcloud:::productId/{product_id}/device/{device_name}"
+                    ]
+                },
+                {
+                    "effect": "allow",
+                    "action": [
+                        "name/cos:PutObject",
+                        "name/cos:GetObject"
+                    ],
+                    "resource": [
+                        f"qcs::cos:ap-guangzhou:uid/125xxxxxx:pmug-125xxxxxx/pmug/{device_name}/*"
                     ]
                 }
             ]
@@ -267,9 +293,101 @@ class MugService:
             self.logger.error(f"Failed to create IoT Explorer client: {str(e)}")
             raise
 
-    def send_pixel_image(self, product_id: str, device_name: str, image_data: Union[str, List], 
-                        target_width: int = 16, target_height: int = 16) -> Dict[str, Any]:
-        """Send pixel image to device via Tencent Cloud IoT Explorer"""
+    def _push_asset_to_cos(self, product_id: str, device_name: str, asset_data: bytes, 
+                          asset_kind: str, asset_id: str, metadata: Dict[str, Any], 
+                          ttl_sec: int = 300) -> Dict[str, Any]:
+        """Push asset to COS and get signed URL with proper key pattern and metadata"""
+        try:
+            if not COS_AVAILABLE:
+                raise ImportError("Tencent Cloud COS SDK not installed, please install tencentcloud-sdk-python-cos")
+            
+            # 1. Get STS credentials
+            sts_info = self.issue_sts(product_id, device_name)
+            
+            # 2. Generate COS client
+            cos_config = CosConfig(
+                Region=sts_info["region"],
+                SecretId=sts_info["tmpSecretId"],
+                SecretKey=sts_info["tmpSecretKey"],
+                Token=sts_info["token"],
+                Scheme="https"
+            )
+            cos_client = CosS3Client(cos_config)
+            
+            # 3. Generate SHA256 hash and key with new pattern
+            sha256 = hashlib.sha256(asset_data).hexdigest()
+            sha8 = sha256[:8]  # First 8 characters of SHA256
+            current_date = datetime.datetime.utcnow().strftime("%Y%m")
+            
+            # Key pattern: pmug/{deviceName}/{YYYYMM}/{assetId}-{sha8}.{ext}
+            if asset_kind == "pixel-json":
+                ext = "json"
+            elif asset_kind == "gif":
+                ext = "gif"
+            else:
+                ext = "json"
+            
+            key = f"pmug/{device_name}/{current_date}/{asset_id}-{sha8}.{ext}"
+            
+            # 4. Set Content-Type based on asset kind
+            content_type = "application/vnd.pmug.pixel+json" if asset_kind == "pixel-json" else "image/gif"
+            
+            # 5. Prepare metadata
+            cos_metadata = {
+                "x-cos-meta-sha256": sha256,
+                "x-cos-meta-width": str(metadata.get("width", 0)),
+                "x-cos-meta-height": str(metadata.get("height", 0)),
+                "x-cos-meta-frames": str(metadata.get("frame_count", 1)),
+                "x-cos-meta-asset-id": asset_id,
+                "x-cos-meta-device-name": device_name,
+                "x-cos-meta-product-id": product_id
+            }
+            
+            # 6. Upload to COS with metadata and cache headers
+            bucket_name = os.getenv("COS_BUCKET", "pixelmug-assets")
+            cos_client.put_object(
+                Bucket=bucket_name,
+                Body=asset_data,
+                Key=key,
+                ContentType=content_type,
+                Metadata=cos_metadata,
+                CacheControl="public, max-age=31536000, immutable",
+                StorageClass="STANDARD"
+            )
+            
+            # 7. Generate signed URL
+            get_url = cos_client.get_presigned_url(
+                Method="GET",
+                Bucket=bucket_name,
+                Key=key,
+                Expired=ttl_sec
+            )
+            
+            # 8. Calculate expiration timestamp
+            expires_at = int((datetime.datetime.utcnow() + datetime.timedelta(seconds=ttl_sec)).timestamp())
+            
+            return {
+                "key": key,
+                "sha256": sha256,
+                "sha8": sha8,
+                "assetId": asset_id,
+                "url": get_url,
+                "bytes": len(asset_data),
+                "width": metadata.get("width", 0),
+                "height": metadata.get("height", 0),
+                "frames": metadata.get("frame_count", 1),
+                "expiresAt": expires_at,
+                "contentType": content_type
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to push asset to COS: {str(e)}")
+            raise
+
+    def send_pixel_image(self, product_id: str, device_name: str, image_data: Union[str, List, Dict], 
+                        target_width: int = 16, target_height: int = 16, 
+                        use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
+        """Send pixel image to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
             # Create IoT client
             client = self._create_iot_client()
@@ -281,6 +399,12 @@ class MugService:
                 pixel_matrix = conversion_result["pixel_matrix"]
                 width = conversion_result["width"]
                 height = conversion_result["height"]
+            elif isinstance(image_data, dict) and "pixels" in image_data:
+                # If it's palette-based pixel art format
+                palette_result = self._process_palette_pixel_art(image_data, target_width, target_height)
+                pixel_matrix = palette_result["pixel_matrix"]
+                width = palette_result["width"]
+                height = palette_result["height"]
             else:
                 # If it's already a pixel matrix
                 pixel_matrix = image_data
@@ -290,6 +414,36 @@ class MugService:
             # Validate pixel matrix
             self._validate_pixel_pattern(pixel_matrix, width, height)
             
+            # Prepare asset data for COS upload if enabled
+            asset_info = None
+            if use_cos:
+                try:
+                    # Generate asset ID
+                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
+                    
+                    # Convert pixel matrix to JSON bytes
+                    asset_data = json.dumps({
+                        "kind": "pixel-json",
+                        "width": width,
+                        "height": height,
+                        "pixel_data": pixel_matrix,
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                    }).encode('utf-8')
+                    
+                    # Prepare metadata
+                    metadata = {
+                        "width": width,
+                        "height": height,
+                        "frame_count": 1
+                    }
+                    
+                    # Upload to COS
+                    asset_info = self._push_asset_to_cos(product_id, device_name, asset_data, "pixel-json", asset_id, metadata, ttl_sec)
+                    self.logger.info(f"Successfully uploaded pixel image to COS: {asset_info['key']}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
+                    use_cos = False
+            
             # Prepare input parameters for IoT device action
             input_params = {
                 "action": "display_pixel_image",
@@ -298,6 +452,33 @@ class MugService:
                 "pixel_data": pixel_matrix,
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
+            
+            # Add COS asset info if available - use new payload format
+            if use_cos and asset_info:
+                # Generate nonce for security
+                nonce = hashlib.md5(f"{asset_info['assetId']}{datetime.datetime.utcnow().timestamp()}".encode()).hexdigest()[:8]
+                current_ts = int(datetime.datetime.utcnow().timestamp())
+                
+                input_params.update({
+                    "method": "control.push_asset",
+                    "clientToken": f"cmd_{current_ts}",
+                    "params": {
+                        "assetId": asset_info["assetId"],
+                        "type": asset_info["contentType"],
+                        "url": asset_info["url"],
+                        "bytes": asset_info["bytes"],
+                        "hash": f"sha256:{asset_info['sha256']}",
+                        "width": asset_info["width"],
+                        "height": asset_info["height"],
+                        "loop": False,
+                        "expiresAt": asset_info["expiresAt"],
+                        "nonce": nonce,
+                        "ts": current_ts
+                    },
+                    "delivery_method": "cos"
+                })
+            else:
+                input_params["delivery_method"] = "direct"
             
             # Create CallDeviceActionAsync request
             req = iot_models.CallDeviceActionAsyncRequest()
@@ -325,8 +506,13 @@ class MugService:
                     "height": height,
                     "total_pixels": width * height
                 },
+                "delivery_method": "cos" if use_cos else "direct",
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
+            
+            # Add COS asset info to result if available
+            if use_cos and asset_info:
+                result["asset"] = asset_info
             
             self.logger.info(f"Successfully sent pixel image to device {product_id}/{device_name}")
             return result
@@ -395,10 +581,11 @@ class MugService:
             self.logger.error(f"Failed to process GIF: {str(e)}")
             raise
 
-    def send_gif_animation(self, product_id: str, device_name: str, gif_data: Union[str, List], 
+    def send_gif_animation(self, product_id: str, device_name: str, gif_data: Union[str, List, Dict], 
                           frame_delay: int = 100, loop_count: int = 0, 
-                          target_width: int = 16, target_height: int = 16) -> Dict[str, Any]:
-        """Send GIF pixel animation to device via Tencent Cloud IoT Explorer"""
+                          target_width: int = 16, target_height: int = 16,
+                          use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
+        """Send GIF pixel animation to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
             # Create IoT client
             client = self._create_iot_client()
@@ -407,6 +594,9 @@ class MugService:
             if isinstance(gif_data, str):
                 # If it's base64 encoded GIF, process to frames
                 frames = self._process_gif_to_frames(gif_data, target_width, target_height)
+            elif isinstance(gif_data, dict) and "frames" in gif_data:
+                # If it's palette-based GIF format
+                frames = self._process_palette_gif_animation(gif_data, target_width, target_height)
             else:
                 # If it's already frame array
                 frames = gif_data
@@ -414,6 +604,39 @@ class MugService:
             # Validate frames
             if not frames:
                 raise ValueError("No frames found in GIF data")
+            
+            # Prepare asset data for COS upload if enabled
+            asset_info = None
+            if use_cos:
+                try:
+                    # Generate asset ID
+                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
+                    
+                    # Convert frames to JSON bytes
+                    asset_data = json.dumps({
+                        "kind": "gif",
+                        "frame_count": len(frames),
+                        "frames": frames,
+                        "frame_delay": frame_delay,
+                        "loop_count": loop_count,
+                        "width": target_width,
+                        "height": target_height,
+                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+                    }).encode('utf-8')
+                    
+                    # Prepare metadata
+                    metadata = {
+                        "width": target_width,
+                        "height": target_height,
+                        "frame_count": len(frames)
+                    }
+                    
+                    # Upload to COS
+                    asset_info = self._push_asset_to_cos(product_id, device_name, asset_data, "gif", asset_id, metadata, ttl_sec)
+                    self.logger.info(f"Successfully uploaded GIF animation to COS: {asset_info['key']}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
+                    use_cos = False
                 
             # Prepare input parameters for IoT device action
             input_params = {
@@ -426,6 +649,33 @@ class MugService:
                 "height": target_height,
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
+            
+            # Add COS asset info if available - use new payload format
+            if use_cos and asset_info:
+                # Generate nonce for security
+                nonce = hashlib.md5(f"{asset_info['assetId']}{datetime.datetime.utcnow().timestamp()}".encode()).hexdigest()[:8]
+                current_ts = int(datetime.datetime.utcnow().timestamp())
+                
+                input_params.update({
+                    "method": "control.push_asset",
+                    "clientToken": f"cmd_{current_ts}",
+                    "params": {
+                        "assetId": asset_info["assetId"],
+                        "type": asset_info["contentType"],
+                        "url": asset_info["url"],
+                        "bytes": asset_info["bytes"],
+                        "hash": f"sha256:{asset_info['sha256']}",
+                        "width": asset_info["width"],
+                        "height": asset_info["height"],
+                        "loop": loop_count != 0,
+                        "expiresAt": asset_info["expiresAt"],
+                        "nonce": nonce,
+                        "ts": current_ts
+                    },
+                    "delivery_method": "cos"
+                })
+            else:
+                input_params["delivery_method"] = "direct"
             
             # Create CallDeviceActionAsync request
             req = iot_models.CallDeviceActionAsyncRequest()
@@ -456,14 +706,150 @@ class MugService:
                     "height": target_height,
                     "total_pixels": target_width * target_height
                 },
+                "delivery_method": "cos" if use_cos else "direct",
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
+            
+            # Add COS asset info to result if available
+            if use_cos and asset_info:
+                result["asset"] = asset_info
             
             self.logger.info(f"Successfully sent GIF animation to device {product_id}/{device_name}")
             return result
             
         except Exception as e:
             self.logger.error(f"Failed to send GIF animation: {str(e)}")
+            raise
+
+    def _process_palette_gif_animation(self, gif_data: Dict[str, Any], target_width: int, target_height: int) -> List[Dict]:
+        """Process palette-based GIF animation format to frame array"""
+        try:
+            # Extract data from GIF format
+            title = gif_data.get("title", "unknown")
+            description = gif_data.get("description", "")
+            width = gif_data.get("width", target_width)
+            height = gif_data.get("height", target_height)
+            palette = gif_data.get("palette", [])
+            frames_data = gif_data.get("frames", [])
+            frame_delay = gif_data.get("frame_delay", 100)
+            loop_count = gif_data.get("loop_count", 0)
+            
+            # Validate palette
+            if not palette or len(palette) == 0:
+                raise ValueError("Palette cannot be empty")
+            
+            if len(palette) > 16:
+                raise ValueError("Palette cannot have more than 16 colors")
+            
+            # Validate palette colors
+            for i, color in enumerate(palette):
+                if not isinstance(color, str) or not re.match(r'^#[0-9A-Fa-f]{6}$', color):
+                    raise ValueError(f"Invalid color format in palette at index {i}: {color}")
+            
+            # Process frames
+            frames = []
+            for frame_idx, frame_data in enumerate(frames_data):
+                if not isinstance(frame_data, dict):
+                    raise ValueError(f"Frame {frame_idx} is not a dictionary")
+                
+                frame_pixels = frame_data.get("pixels", [])
+                frame_duration = frame_data.get("duration", frame_delay)
+                
+                # Validate frame pixels
+                if not frame_pixels or len(frame_pixels) != height:
+                    raise ValueError(f"Frame {frame_idx} pixels height {len(frame_pixels)} doesn't match specified height {height}")
+                
+                # Convert palette indices to hex colors for this frame
+                pixel_matrix = []
+                for row_idx, row in enumerate(frame_pixels):
+                    if not isinstance(row, list):
+                        raise ValueError(f"Frame {frame_idx} row {row_idx} is not a list")
+                    
+                    if len(row) != width:
+                        raise ValueError(f"Frame {frame_idx} row {row_idx} width {len(row)} doesn't match specified width {width}")
+                    
+                    pixel_row = []
+                    for col_idx, pixel_index in enumerate(row):
+                        if not isinstance(pixel_index, int) or pixel_index < 0 or pixel_index >= len(palette):
+                            raise ValueError(f"Invalid pixel index in frame {frame_idx} at [{row_idx}][{col_idx}]: {pixel_index}")
+                        
+                        # Get color from palette
+                        color = palette[pixel_index]
+                        pixel_row.append(color)
+                    
+                    pixel_matrix.append(pixel_row)
+                
+                frames.append({
+                    "frame_index": frame_idx,
+                    "pixel_matrix": pixel_matrix,
+                    "duration": frame_duration
+                })
+            
+            return frames
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process palette GIF animation: {str(e)}")
+            raise
+
+    def _process_palette_pixel_art(self, pixel_art_data: Dict[str, Any], target_width: int, target_height: int) -> Dict[str, Any]:
+        """Process palette-based pixel art format to hex color matrix"""
+        try:
+            # Extract data from pixel art format
+            title = pixel_art_data.get("title", "unknown")
+            description = pixel_art_data.get("description", "")
+            width = pixel_art_data.get("width", target_width)
+            height = pixel_art_data.get("height", target_height)
+            palette = pixel_art_data.get("palette", [])
+            pixels = pixel_art_data.get("pixels", [])
+            
+            # Validate palette
+            if not palette or len(palette) == 0:
+                raise ValueError("Palette cannot be empty")
+            
+            if len(palette) > 16:
+                raise ValueError("Palette cannot have more than 16 colors")
+            
+            # Validate palette colors
+            for i, color in enumerate(palette):
+                if not isinstance(color, str) or not re.match(r'^#[0-9A-Fa-f]{6}$', color):
+                    raise ValueError(f"Invalid color format in palette at index {i}: {color}")
+            
+            # Validate pixels array
+            if not pixels or len(pixels) != height:
+                raise ValueError(f"Pixels array height {len(pixels)} doesn't match specified height {height}")
+            
+            # Convert palette indices to hex colors
+            pixel_matrix = []
+            for row_idx, row in enumerate(pixels):
+                if not isinstance(row, list):
+                    raise ValueError(f"Pixels row {row_idx} is not a list")
+                
+                if len(row) != width:
+                    raise ValueError(f"Pixels row {row_idx} width {len(row)} doesn't match specified width {width}")
+                
+                pixel_row = []
+                for col_idx, pixel_index in enumerate(row):
+                    if not isinstance(pixel_index, int) or pixel_index < 0 or pixel_index >= len(palette):
+                        raise ValueError(f"Invalid pixel index at [{row_idx}][{col_idx}]: {pixel_index}")
+                    
+                    # Get color from palette
+                    color = palette[pixel_index]
+                    pixel_row.append(color)
+                
+                pixel_matrix.append(pixel_row)
+            
+            return {
+                "pixel_matrix": pixel_matrix,
+                "width": width,
+                "height": height,
+                "palette": palette,
+                "title": title,
+                "description": description,
+                "format": "palette-based"
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process palette pixel art: {str(e)}")
             raise
 
     def _validate_pixel_pattern(self, pattern: Union[List, str], width: int, height: int) -> bool:
@@ -556,6 +942,22 @@ class MugService:
                 ],
                 "width": 8,
                 "height": 8
+            },
+            "palette_example": {
+                "description": "4x4 palette-based example",
+                "palette_format": {
+                    "title": "sample_image",
+                    "description": "Converted from sample_image.jpg",
+                    "width": 4,
+                    "height": 4,
+                    "palette": ["#ffffff", "#ff0000", "#00ff00", "#0000ff"],
+                    "pixels": [
+                        [0, 1, 1, 0],
+                        [1, 2, 2, 1],
+                        [1, 3, 3, 1],
+                        [0, 1, 1, 0]
+                    ]
+                }
             }
         }
 
@@ -841,6 +1243,8 @@ if FASTAPI_AVAILABLE:
         image_data: str = Query(..., description="Base64 encoded image or pixel matrix JSON"),
         width: int = Query(16, description="Target width"),
         height: int = Query(16, description="Target height"),
+        use_cos: bool = Query(True, description="Enable COS upload"),
+        ttl_sec: int = Query(900, description="COS signed URL TTL in seconds"),
         user_id: str = Query("default_user", description="User ID (for authorization)")
     ):
         """
@@ -880,7 +1284,7 @@ if FASTAPI_AVAILABLE:
                 image_input = image_data
             
             # Send pixel image to device
-            result = mug_service.send_pixel_image(pid, dn, image_input, width, height)
+            result = mug_service.send_pixel_image(pid, dn, image_input, width, height, use_cos, ttl_sec)
             
             return JSONResponse(
                 status_code=200,
@@ -908,6 +1312,8 @@ if FASTAPI_AVAILABLE:
         loop_count: int = Query(0, description="Loop count (0 for infinite)"),
         width: int = Query(16, description="Target width"),
         height: int = Query(16, description="Target height"),
+        use_cos: bool = Query(True, description="Enable COS upload"),
+        ttl_sec: int = Query(900, description="COS signed URL TTL in seconds"),
         user_id: str = Query("default_user", description="User ID (for authorization)")
     ):
         """
@@ -949,7 +1355,7 @@ if FASTAPI_AVAILABLE:
                 gif_input = gif_data
             
             # Send GIF animation to device
-            result = mug_service.send_gif_animation(pid, dn, gif_input, frame_delay, loop_count, width, height)
+            result = mug_service.send_gif_animation(pid, dn, gif_input, frame_delay, loop_count, width, height, use_cos, ttl_sec)
             
             return JSONResponse(
                 status_code=200,
@@ -975,7 +1381,10 @@ if FASTAPI_AVAILABLE:
             "status": "healthy",
             "service": "mcp_pixel_mug_sts",
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-            "tencent_cloud_sdk": TENCENT_CLOUD_AVAILABLE
+            "tencent_cloud_sdk": TENCENT_CLOUD_AVAILABLE,
+            "cos_sdk": COS_AVAILABLE,
+            "iot_explorer_sdk": IOT_EXPLORER_AVAILABLE,
+            "pil_available": PIL_AVAILABLE
         }
     
     @app.get("/")
@@ -987,9 +1396,10 @@ if FASTAPI_AVAILABLE:
             "description": "Tencent Cloud IoT Device Control and STS Service",
             "features": [
                 "STS temporary credential issuing",
-                "Pixel image transmission to IoT devices",
-                "GIF animation transmission to IoT devices",
-                "Device authorization and validation"
+                "Pixel image transmission to IoT devices with COS upload",
+                "GIF animation transmission to IoT devices with COS upload",
+                "Device authorization and validation",
+                "COS asset management with signed URLs"
             ],
             "endpoints": {
                 "issue_sts": "/sts/issue?pid=<ProductId>&dn=<DeviceName>&user_id=<UserId>",
@@ -1001,6 +1411,7 @@ if FASTAPI_AVAILABLE:
             "requirements": {
                 "env_vars": {
                     "IOT_ROLE_ARN": "CAM Role ARN (required)",
+                    "COS_BUCKET": "COS bucket name (optional, default: pixelmug-assets)",
                     "TC_SECRET_ID": "Tencent Cloud SecretId (optional, can be omitted in CVM/TKE environment)",
                     "TC_SECRET_KEY": "Tencent Cloud SecretKey (optional, can be omitted in CVM/TKE environment)",
                     "DEFAULT_REGION": "Default region (optional, default: ap-guangzhou)"
@@ -1008,6 +1419,7 @@ if FASTAPI_AVAILABLE:
                 "dependencies": {
                     "tencentcloud-sdk-python-sts": ">=3.0.0",
                     "tencentcloud-sdk-python-iotexplorer": ">=3.0.0",
+                    "tencentcloud-sdk-python-cos": ">=5.0.0",
                     "fastapi": ">=0.68.0",
                     "Pillow": ">=8.0.0 (for image/GIF processing)"
                 }
