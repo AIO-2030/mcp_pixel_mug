@@ -69,15 +69,20 @@ if $PYTHON_CMD build.py build; then
     fi
     
     echo ""
-    echo "🚀 Usage Examples:"
-    echo "   # Test Standard I/O mode:"
+    echo "🚀 Usage Examples (ALAYA Network - stdio mode):"
+    echo "   # Test help:"
     echo "   echo '{\"jsonrpc\":\"2.0\",\"method\":\"help\",\"id\":1}' | ./dist/pixelmug_stdio"
     echo ""
-    echo "   # Run Interactive mode:"
-    echo "   ./dist/pixelmug_interactive"
+    echo "   # Test Alaya MCP pixel art feature:"
+    echo "   echo '{\"jsonrpc\":\"2.0\",\"method\":\"send_pixel_image\",\"params\":{\"product_id\":\"ALAYA001\",\"device_name\":\"alaya_mug_001\",\"image_data\":[[\"#FF0000\",\"#00FF00\"],[\"#0000FF\",\"#FFFFFF\"]],\"target_width\":2,\"target_height\":2,\"user_id\":\"alaya_user\"},\"id\":1}' | ./dist/pixelmug_stdio"
     echo ""
-    echo "   # Test pixel art feature:"
-    echo "   echo '{\"jsonrpc\":\"2.0\",\"method\":\"publish_action\",\"params\":{\"device_id\":\"mug_001\",\"action\":\"pixel_art\",\"params\":{\"pattern\":[[\"#FF0000\",\"#00FF00\"],[\"#0000FF\",\"#FFFFFF\"]],\"width\":2,\"height\":2,\"duration\":10}},\"id\":1}' | ./dist/pixelmug_stdio"
+    echo "   # Test Alaya MCP device status:"
+    echo "   echo '{\"jsonrpc\":\"2.0\",\"method\":\"get_device_status\",\"params\":{\"product_id\":\"ALAYA001\",\"device_name\":\"alaya_mug_001\",\"user_id\":\"alaya_user\"},\"id\":1}' | ./dist/pixelmug_stdio"
+    echo ""
+    echo "   # Test STS credentials:"
+    echo "   echo '{\"jsonrpc\":\"2.0\",\"method\":\"issue_sts\",\"params\":{\"product_id\":\"ALAYA001\",\"device_name\":\"alaya_mug_001\",\"user_id\":\"alaya_user\"},\"id\":1}' | ./dist/pixelmug_stdio"
+    echo ""
+    echo "   # Note: ALAYA network uses stdio mode only, no HTTP service needed"
     
 else
     echo ""

@@ -58,7 +58,7 @@ class MugService:
         return {
             "service": "mcp_pixel_mug",
             "version": "2.0.0",
-            "description": "PixelMug Smart Mug Tencent Cloud IoT Control Interface",
+            "description": "PixelMug Smart Mug Tencent Cloud IoT Control Interface (Alaya MCP)",
             "methods": [
                 {
                     "name": "help",
@@ -134,7 +134,7 @@ class MugService:
         }
     
     def issue_sts(self, product_id: str, device_name: str) -> Dict[str, Any]:
-        """Issue Tencent Cloud IoT STS temporary access credentials"""
+        """Issue Tencent Cloud IoT STS temporary access credentials for ALAYA network"""
         try:
             # Check if Tencent Cloud SDK is available
             if not TENCENT_CLOUD_AVAILABLE:
@@ -147,8 +147,8 @@ class MugService:
             
             region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             
-            # Get Tencent Cloud credentials
-            cred = self._get_tencent_credentials()
+            # Get base credentials for STS call
+            base_cred = self._get_base_credentials()
             
             # Configure HTTP and Client Profile
             httpProfile = HttpProfile()
@@ -158,7 +158,7 @@ class MugService:
             clientProfile.httpProfile = httpProfile
             
             # Create STS client
-            client = sts_client.StsClient(cred, region, clientProfile)
+            client = sts_client.StsClient(base_cred, region, clientProfile)
             
             # Build session policy to limit permissions to single device
             session_policy = self._build_session_policy(product_id, device_name)
@@ -166,11 +166,9 @@ class MugService:
             # Create AssumeRole request with complete common parameters
             req = sts_models.AssumeRoleRequest()
             params = {
-                # Required common parameters as per Tencent Cloud API documentation
                 "Action": "AssumeRole",
                 "Version": "2018-08-13",
                 "Region": region,
-                # Required request parameters
                 "RoleArn": role_arn,
                 "RoleSessionName": f"iot-device-{product_id}-{device_name}-{int(datetime.datetime.now().timestamp())}",
                 "DurationSeconds": 900,  # 15 minutes
@@ -178,16 +176,17 @@ class MugService:
             }
             req.from_json_string(json.dumps(params))
             
-            # Send request
+            # Call AssumeRole API
             resp = client.AssumeRole(req)
             
-            # Build response result
+            # Extract credentials from response
             credentials = resp.Credentials
             result = {
                 "tmpSecretId": credentials.TmpSecretId,
                 "tmpSecretKey": credentials.TmpSecretKey,
                 "token": credentials.Token,
-                "expiration": credentials.Expiration,
+                "expiredTime": resp.ExpiredTime,
+                "expiration": resp.Expiration,
                 "region": region,
                 "product_id": product_id,
                 "device_name": device_name,
@@ -201,27 +200,88 @@ class MugService:
             self.logger.error(f"Failed to issue STS credentials: {str(e)}")
             raise
     
-    def _get_tencent_credentials(self):
-        """Get Tencent Cloud credentials, prioritize CVM/TKE bound role, otherwise read from environment variables"""
+    def _get_base_credentials(self):
+        """Get base credentials for initial STS call
+        
+        This is used only for the initial STS AssumeRole call.
+        Priority: Sub-account keys > Main account keys
+        """
         try:
-            # Try to get explicit AK/SK from environment variables
+            # Use explicit AK/SK from environment variables
             secret_id = os.getenv("TC_SECRET_ID")
             secret_key = os.getenv("TC_SECRET_KEY")
             
             if secret_id and secret_key:
-                self.logger.info("Using Tencent Cloud credentials from environment variables")
+                # Check if it's sub-account or main account
+                account_type = self._detect_account_type(secret_id)
+                self.logger.info(f"Using {account_type} credentials from environment variables - only for initial STS call")
                 return credential.Credential(secret_id, secret_key)
             else:
-                # Use CVM/TKE metadata service to automatically get temporary credentials
-                self.logger.info("Using CVM/TKE bound role to get temporary credentials")
-                return credential.Credential()
+                raise ValueError("No base credentials available for STS call. Please set TC_SECRET_ID and TC_SECRET_KEY environment variables.")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to get base credentials for STS: {str(e)}")
+            raise ValueError("Unable to get base credentials for ALAYA network STS call")
+    
+    def _detect_account_type(self, secret_id: str) -> str:
+        """Detect if the secret_id belongs to main account or sub-account"""
+        try:
+            # Sub-account secret_id typically starts with specific patterns
+            # This is a heuristic detection, actual implementation may vary
+            if secret_id.startswith("AKID") and len(secret_id) > 20:
+                # This is a rough heuristic - in practice you might need to call
+                # GetCallerIdentity API to determine the actual account type
+                return "sub-account"
+            else:
+                return "main-account"
+        except Exception:
+            return "unknown-account"
+    
+    def _get_tencent_credentials(self, sts_credentials: Dict[str, Any] = None):
+        """Get Tencent Cloud credentials for ALAYA network operations
+        
+        In ALAYA network, we should use STS temporary credentials for all operations
+        """
+        try:
+            if sts_credentials:
+                # Use STS temporary credentials (preferred for ALAYA network)
+                self.logger.info("Using STS temporary credentials for ALAYA network operations")
+                return credential.Credential(
+                    sts_credentials["tmpSecretId"],
+                    sts_credentials["tmpSecretKey"],
+                    sts_credentials["token"]
+                )
+            else:
+                # This should not happen in ALAYA network - all operations should use STS
+                raise ValueError("STS credentials required for ALAYA network operations")
                 
         except Exception as e:
             self.logger.error(f"Failed to get Tencent Cloud credentials: {str(e)}")
-            raise ValueError("Unable to get Tencent Cloud credentials, please check environment variables TC_SECRET_ID/TC_SECRET_KEY or ensure running on CVM/TKE with bound role")
+            raise ValueError("Unable to get Tencent Cloud credentials for ALAYA network")
     
     def _build_session_policy(self, product_id: str, device_name: str) -> str:
-        """Build session policy to limit permissions to single device and COS operations"""
+        """Build session policy to limit permissions to single device and COS operations
+        
+        Note: This policy further restricts the permissions of the STS temporary credentials.
+        The actual permissions come from the role being assumed (IOT_ROLE_ARN).
+        """
+        # Get COS configuration from environment variables
+        cos_region = os.getenv("COS_REGION", "ap-guangzhou")
+        cos_owner_uin = os.getenv("COS_OWNER_UIN")
+        cos_bucket_name = os.getenv("COS_BUCKET_NAME")
+        
+        # Build COS resource ARN if COS is configured
+        # Note: cos_owner_uin should be the UIN of the account that owns the COS bucket
+        # This could be the main account UIN or sub-account UIN depending on your setup
+        cos_resources = []
+        if cos_owner_uin and cos_bucket_name:
+            cos_resource_arn = f"qcs::cos:{cos_region}:uid/{cos_owner_uin}:{cos_bucket_name}/pmug/{device_name}/*"
+            cos_resources.append(cos_resource_arn)
+            self.logger.info(f"Added COS resource ARN: {cos_resource_arn}")
+            self.logger.info(f"COS Owner UIN: {cos_owner_uin} (should be the account UIN that owns the COS bucket)")
+        else:
+            self.logger.warning("COS not configured: COS_OWNER_UIN or COS_BUCKET_NAME not set, skipping COS permissions")
+        
         policy = {
             "version": "2.0",
             "statement": [
@@ -235,76 +295,43 @@ class MugService:
                     "resource": [
                         f"qcs::iotcloud:::productId/{product_id}/device/{device_name}"
                     ]
-                },
-                {
-                    "effect": "allow",
-                    "action": [
-                        "name/cos:PutObject",
-                        "name/cos:GetObject"
-                    ],
-                    "resource": [
-                        f"qcs::cos:ap-guangzhou:uid/125xxxxxx:pmug-125xxxxxx/pmug/{device_name}/*"
-                    ]
                 }
             ]
         }
+        
+        # Add COS permissions if COS is configured
+        if cos_resources:
+            policy["statement"].append({
+                "effect": "allow",
+                "action": [
+                    "name/cos:PutObject",
+                    "name/cos:GetObject"
+                ],
+                "resource": cos_resources
+            })
+        
         return json.dumps(policy)
     
     def _authorize(self, user_id: str, product_id: str, device_name: str) -> bool:
         """
-        Authorization method: Check if user has permission to request STS for specified device
-        Note: This should integrate with actual user system for authorization
+        Simple authorization method for ALAYA protocol
+        ALAYA is a protocol standard, no additional validation needed
+        DApp directly assembles stdio parameters
         """
-        # TODO: This should integrate with actual user system for authorization
-        # Example: Check if user owns the device
-        # In actual implementation, should query database or call permission service
-        
-        # Temporary implementation: Simple mock authorization
-        self.logger.warning("Currently using mock authorization, please integrate with actual user system in production")
-        
-        # Mock: Check if device is in allowed device list
-        allowed_devices = [
-            ("ABC123DEF", "mug_001"),
-            ("ABC123DEF", "mug_002"),
-            ("XYZ789GHI", "device_001")
-        ]
-        
-        if (product_id, device_name) in allowed_devices:
-            self.logger.info(f"User {user_id} has permission to access device {product_id}/{device_name}")
+        try:
+            # 基本参数验证
+            if not product_id or not device_name:
+                self.logger.error("Missing required parameters: product_id and device_name")
+                return False
+            
+            # ALAYA协议标准：直接接受DApp组装的参数
+            self.logger.info(f"Device {product_id}/{device_name} authorized for user {user_id} via ALAYA protocol")
             return True
-        else:
-            self.logger.warning(f"User {user_id} has no permission to access device {product_id}/{device_name}")
+                
+        except Exception as e:
+            self.logger.error(f"Error during device authorization: {str(e)}")
             return False
     
-    def _create_iot_client(self):
-        """Create Tencent Cloud IoT Explorer client"""
-        try:
-            # Check if IoT Explorer SDK is available
-            if not IOT_EXPLORER_AVAILABLE:
-                raise ImportError("Tencent Cloud IoT Explorer SDK not installed, please install tencentcloud-sdk-python-iotexplorer")
-            
-            # Get Tencent Cloud credentials
-            cred = self._get_tencent_credentials()
-            
-            # Get region from environment
-            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
-            
-            # Configure HTTP and Client Profile
-            httpProfile = HttpProfile()
-            httpProfile.endpoint = "iotexplorer.tencentcloudapi.com"
-            
-            clientProfile = ClientProfile()
-            clientProfile.httpProfile = httpProfile
-            
-            # Create IoT Explorer client
-            client = iotexplorer_client.IotexplorerClient(cred, region, clientProfile)
-            
-            self.logger.info("Successfully created IoT Explorer client")
-            return client
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create IoT Explorer client: {str(e)}")
-            raise
 
     def _create_iot_client_with_sts(self, sts_credentials: Dict[str, Any]):
         """Create Tencent Cloud IoT Explorer client with STS temporary credentials"""
@@ -1266,7 +1293,8 @@ class MugService:
 # Service instance
 mug_service = MugService()
 
-# FastAPI Application
+# FastAPI Application (Optional - only needed for HTTP mode)
+# ALAYA network uses stdio mode, FastAPI is not required
 try:
     from fastapi import FastAPI, HTTPException, Query
     from fastapi.responses import JSONResponse
@@ -1274,8 +1302,9 @@ try:
 except ImportError:
     FASTAPI_AVAILABLE = False
 
+# Note: ALAYA network uses stdio mode, FastAPI endpoints are optional
 if FASTAPI_AVAILABLE:
-    app = FastAPI(title="PixelMug IoT STS Service", version="1.0.0")
+    app = FastAPI(title="PixelMug IoT STS Service (Alaya MCP)", version="2.0.0")
     
     @app.get("/sts/issue")
     async def issue_sts_endpoint(
@@ -1486,7 +1515,7 @@ if FASTAPI_AVAILABLE:
         """Health check endpoint"""
         return {
             "status": "healthy",
-            "service": "mcp_pixel_mug_sts",
+            "service": "mcp_pixel_mug_sts_alaya",
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "tencent_cloud_sdk": TENCENT_CLOUD_AVAILABLE,
             "cos_sdk": COS_AVAILABLE,
@@ -1498,9 +1527,9 @@ if FASTAPI_AVAILABLE:
     async def root():
         """Root path, return service information"""
         return {
-            "service": "PixelMug IoT STS Service",
+            "service": "PixelMug IoT STS Service (Alaya MCP)",
             "version": "2.0.0",
-            "description": "Tencent Cloud IoT Device Control and STS Service",
+            "description": "Tencent Cloud IoT Device Control and STS Service for Alaya Network",
             "features": [
                 "STS temporary credential issuing",
                 "Pixel image transmission to IoT devices with COS upload",
@@ -1519,6 +1548,9 @@ if FASTAPI_AVAILABLE:
                 "env_vars": {
                     "IOT_ROLE_ARN": "CAM Role ARN (required)",
                     "COS_BUCKET": "COS bucket name (optional, default: pixelmug-assets)",
+                    "COS_OWNER_UIN": "COS bucket owner UIN (main account or sub-account UIN that owns the bucket)",
+                    "COS_BUCKET_NAME": "COS bucket name for policy (required for COS operations)",
+                    "COS_REGION": "COS region (optional, default: ap-guangzhou)",
                     "TC_SECRET_ID": "Tencent Cloud SecretId (optional, can be omitted in CVM/TKE environment)",
                     "TC_SECRET_KEY": "Tencent Cloud SecretKey (optional, can be omitted in CVM/TKE environment)",
                     "DEFAULT_REGION": "Default region (optional, default: ap-guangzhou)"

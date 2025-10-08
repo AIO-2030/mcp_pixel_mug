@@ -4,9 +4,10 @@
 tencentcloud-sdk-python-sts>=3.0.0
 tencentcloud-sdk-python-iotexplorer>=3.0.0
 
-# FastAPI和相关依赖
-fastapi>=0.68.0
-uvicorn[standard]>=0.15.0
+# FastAPI和相关依赖 (可选 - 仅HTTP模式需要)
+# ALAYA网络使用stdio模式，不需要FastAPI
+# fastapi>=0.68.0
+# uvicorn[standard]>=0.15.0
 
 # 图像处理
 Pillow>=8.0.0

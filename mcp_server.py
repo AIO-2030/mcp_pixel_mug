@@ -10,6 +10,7 @@ import asyncio
 import logging
 import time
 import os
+import datetime
 from typing import Dict, Any, Optional
 from mug_service import mug_service
 
@@ -37,7 +38,7 @@ class MCPServer:
         )
     
     async def handle_request(self, request_data: str) -> str:
-        """Handle JSON-RPC requests"""
+        """Handle JSON-RPC requests with ALAYA network validation"""
         try:
             request = json.loads(request_data)
             self.logger.info(f"Received request: {request}")
@@ -53,6 +54,15 @@ class MCPServer:
             method = request.get('method')
             params = request.get('params', {})
             request_id = request.get('id')
+            
+            # Basic parameter validation for device operations
+            if method in ['issue_sts', 'send_pixel_image', 'send_gif_animation', 'get_device_status']:
+                if not self._validate_basic_params(params):
+                    return self._create_error_response(
+                        request_id,
+                        -32602,
+                        "Missing required parameters: product_id, device_name"
+                    )
             
             # Route to corresponding handler method
             if method == 'help':
@@ -99,6 +109,22 @@ class MCPServer:
             isinstance(request['method'], str)
         )
     
+    def _validate_basic_params(self, params: Dict[str, Any]) -> bool:
+        """Validate basic required parameters"""
+        try:
+            # 检查基本必需参数
+            required_params = ['product_id', 'device_name']
+            
+            for param in required_params:
+                if param not in params or not params[param]:
+                    return False
+            
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error validating basic parameters: {str(e)}")
+            return False
+    
     async def _handle_help(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle help request"""
         return mug_service.get_help()
@@ -107,11 +133,16 @@ class MCPServer:
         """Handle issue_sts request"""
         product_id = params.get('product_id')
         device_name = params.get('device_name')
+        user_id = params.get('user_id', 'alaya_user')
         
         if not product_id:
             raise ValueError("Missing required parameter: product_id")
         if not device_name:
             raise ValueError("Missing required parameter: device_name")
+        
+        # 简单授权验证
+        if not mug_service._authorize(user_id, product_id, device_name):
+            raise ValueError("Device access denied")
         
         return mug_service.issue_sts(product_id, device_name)
     
@@ -122,6 +153,7 @@ class MCPServer:
         image_data = params.get('image_data')
         target_width = params.get('target_width', 16)
         target_height = params.get('target_height', 16)
+        user_id = params.get('user_id', 'alaya_user')
         
         if not product_id:
             raise ValueError("Missing required parameter: product_id")
@@ -129,6 +161,10 @@ class MCPServer:
             raise ValueError("Missing required parameter: device_name")
         if not image_data:
             raise ValueError("Missing required parameter: image_data")
+        
+        # 简单授权验证
+        if not mug_service._authorize(user_id, product_id, device_name):
+            raise ValueError("Device access denied")
         
         return mug_service.send_pixel_image(product_id, device_name, image_data, target_width, target_height)
     
@@ -141,6 +177,7 @@ class MCPServer:
         loop_count = params.get('loop_count', 0)
         target_width = params.get('target_width', 16)
         target_height = params.get('target_height', 16)
+        user_id = params.get('user_id', 'alaya_user')
         
         if not product_id:
             raise ValueError("Missing required parameter: product_id")
@@ -148,6 +185,10 @@ class MCPServer:
             raise ValueError("Missing required parameter: device_name")
         if not gif_data:
             raise ValueError("Missing required parameter: gif_data")
+        
+        # 简单授权验证
+        if not mug_service._authorize(user_id, product_id, device_name):
+            raise ValueError("Device access denied")
         
         return mug_service.send_gif_animation(product_id, device_name, gif_data, frame_delay, loop_count, target_width, target_height)
     
@@ -167,33 +208,18 @@ class MCPServer:
         """Handle get_device_status request"""
         product_id = params.get("product_id")
         device_name = params.get("device_name")
+        user_id = params.get('user_id', 'alaya_user')
         
-        if not product_id or not device_name:
-            return {
-                "status": "error",
-                "error": "Missing required parameters: product_id and device_name",
-                "timestamp": int(time.time()),
-                "request_id": f"status_{int(time.time())}"
-            }
+        if not product_id:
+            raise ValueError("Missing required parameter: product_id")
+        if not device_name:
+            raise ValueError("Missing required parameter: device_name")
         
-        # 调用腾讯云 IoT Explorer API 查询设备状态
-        device_status = await query_device_status_from_tencent_iot(product_id, device_name)
+        # 简单授权验证
+        if not mug_service._authorize(user_id, product_id, device_name):
+            raise ValueError("Device access denied")
         
-        return {
-            "status": "success",
-            "device_info": {
-                "product_id": product_id,
-                "device_name": device_name,
-                "is_online": device_status.get("is_online", False),
-                "last_seen": device_status.get("last_seen", 0),
-                "connection_status": device_status.get("connection_status", "disconnected"),
-                "ip_address": device_status.get("ip_address"),
-                "signal_strength": device_status.get("signal_strength"),
-                "battery_level": device_status.get("battery_level")
-            },
-            "timestamp": int(time.time()),
-            "request_id": f"status_{int(time.time())}"
-        }
+        return mug_service.get_device_status(product_id, device_name)
     
     def _create_success_response(self, request_id: Any, result: Any) -> str:
         """Create success response"""
