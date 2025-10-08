@@ -339,6 +339,46 @@ The MCP server supports the following JSON-RPC methods:
 }
 ```
 
+### 6. `get_device_status` - Query Device Status
+
+**Purpose**: Query device online status and basic information
+
+**Request**:
+```json
+{
+  "jsonrpc": "2.0",
+  "method": "get_device_status",
+  "params": {
+    "product_id": "ABC123DEF",
+    "device_name": "mug_001"
+  },
+  "id": 6
+}
+```
+
+**Response**:
+```json
+{
+  "jsonrpc": "2.0",
+  "result": {
+    "status": "success",
+    "device_info": {
+      "product_id": "ABC123DEF",
+      "device_name": "mug_001",
+      "is_online": true,
+      "last_seen": 1704067200,
+      "connection_status": "connected",
+      "ip_address": "192.168.1.100",
+      "signal_strength": -45,
+      "battery_level": 85
+    },
+    "timestamp": 1704067200,
+    "request_id": "status_1704067200"
+  },
+  "id": 6
+}
+```
+
 ## ⚙️ Pixel Art Formats
 
 ### 🎨 2D Array Format

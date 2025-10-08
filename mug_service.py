@@ -110,6 +110,14 @@ class MugService:
                         "target_height": "Target height for pixel matrix (optional, default: 16)",
                         "resize_method": "Resize method: nearest/bilinear/bicubic (optional, default: nearest)"
                     }
+                },
+                {
+                    "name": "get_device_status",
+                    "description": "Query device online status and basic information",
+                    "params": {
+                        "product_id": "Product ID, e.g.: ABC123DEF",
+                        "device_name": "Device name, e.g.: mug_001"
+                    }
                 }
             ],
             "supported_actions": [
@@ -155,9 +163,14 @@ class MugService:
             # Build session policy to limit permissions to single device
             session_policy = self._build_session_policy(product_id, device_name)
             
-            # Create AssumeRole request
+            # Create AssumeRole request with complete common parameters
             req = sts_models.AssumeRoleRequest()
             params = {
+                # Required common parameters as per Tencent Cloud API documentation
+                "Action": "AssumeRole",
+                "Version": "2018-08-13",
+                "Region": region,
+                # Required request parameters
                 "RoleArn": role_arn,
                 "RoleSessionName": f"iot-device-{product_id}-{device_name}-{int(datetime.datetime.now().timestamp())}",
                 "DurationSeconds": 900,  # 15 minutes
@@ -293,6 +306,40 @@ class MugService:
             self.logger.error(f"Failed to create IoT Explorer client: {str(e)}")
             raise
 
+    def _create_iot_client_with_sts(self, sts_credentials: Dict[str, Any]):
+        """Create Tencent Cloud IoT Explorer client with STS temporary credentials"""
+        try:
+            # Check if IoT Explorer SDK is available
+            if not IOT_EXPLORER_AVAILABLE:
+                raise ImportError("Tencent Cloud IoT Explorer SDK not installed, please install tencentcloud-sdk-python-iotexplorer")
+            
+            # Create credentials with STS temporary credentials
+            cred = credential.Credential(
+                sts_credentials["tmpSecretId"],
+                sts_credentials["tmpSecretKey"],
+                sts_credentials["token"]
+            )
+            
+            # Get region from STS credentials
+            region = sts_credentials["region"]
+            
+            # Configure HTTP and Client Profile
+            httpProfile = HttpProfile()
+            httpProfile.endpoint = "iotexplorer.tencentcloudapi.com"
+            
+            clientProfile = ClientProfile()
+            clientProfile.httpProfile = httpProfile
+            
+            # Create IoT Explorer client with STS credentials
+            client = iotexplorer_client.IotexplorerClient(cred, region, clientProfile)
+            
+            self.logger.info(f"Successfully created IoT Explorer client with STS credentials for region {region}")
+            return client
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create IoT Explorer client with STS: {str(e)}")
+            raise
+
     def _push_asset_to_cos(self, product_id: str, device_name: str, asset_data: bytes, 
                           asset_kind: str, asset_id: str, metadata: Dict[str, Any], 
                           ttl_sec: int = 300) -> Dict[str, Any]:
@@ -389,8 +436,11 @@ class MugService:
                         use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
         """Send pixel image to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
-            # Create IoT client
-            client = self._create_iot_client()
+            # Get STS credentials for device access
+            sts_credentials = self.issue_sts(product_id, device_name)
+            
+            # Create IoT client with STS credentials
+            client = self._create_iot_client_with_sts(sts_credentials)
             
             # Process image data
             if isinstance(image_data, str):
@@ -480,13 +530,17 @@ class MugService:
             else:
                 input_params["delivery_method"] = "direct"
             
-            # Create CallDeviceActionAsync request
+            # Create CallDeviceActionAsync request with complete common parameters
             req = iot_models.CallDeviceActionAsyncRequest()
             params = {
                 "ProductId": product_id,
                 "DeviceName": device_name,
                 "ActionId": "display_pixel_image",
-                "InputParams": json.dumps(input_params)
+                "InputParams": json.dumps(input_params),
+                # Add common parameters as per Tencent Cloud API documentation
+                "Region": sts_credentials["region"],
+                "Version": "2019-04-23",  # IoT Explorer API version
+                "Token": sts_credentials["token"]  # STS temporary token
             }
             req.from_json_string(json.dumps(params))
             
@@ -587,8 +641,11 @@ class MugService:
                           use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
         """Send GIF pixel animation to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
-            # Create IoT client
-            client = self._create_iot_client()
+            # Get STS credentials for device access
+            sts_credentials = self.issue_sts(product_id, device_name)
+            
+            # Create IoT client with STS credentials
+            client = self._create_iot_client_with_sts(sts_credentials)
             
             # Process GIF data
             if isinstance(gif_data, str):
@@ -677,13 +734,17 @@ class MugService:
             else:
                 input_params["delivery_method"] = "direct"
             
-            # Create CallDeviceActionAsync request
+            # Create CallDeviceActionAsync request with complete common parameters
             req = iot_models.CallDeviceActionAsyncRequest()
             params = {
                 "ProductId": product_id,
                 "DeviceName": device_name,
                 "ActionId": "display_gif_animation",
-                "InputParams": json.dumps(input_params)
+                "InputParams": json.dumps(input_params),
+                # Add common parameters as per Tencent Cloud API documentation
+                "Region": sts_credentials["region"],
+                "Version": "2019-04-23",  # IoT Explorer API version
+                "Token": sts_credentials["token"]  # STS temporary token
             }
             req.from_json_string(json.dumps(params))
             
@@ -1109,6 +1170,52 @@ class MugService:
             
         except Exception as e:
             self.logger.error(f"Failed to convert image to pixels: {str(e)}")
+            raise
+
+    def get_device_status(self, product_id: str, device_name: str) -> Dict[str, Any]:
+        """Query device online status and basic information"""
+        try:
+            # Get STS credentials for device access
+            sts_credentials = self.issue_sts(product_id, device_name)
+            
+            # Create IoT client with STS credentials
+            client = self._create_iot_client_with_sts(sts_credentials)
+            
+            # Create GetDeviceStatus request with complete common parameters
+            req = iot_models.GetDeviceStatusRequest()
+            params = {
+                "ProductId": product_id,
+                "DeviceName": device_name,
+                # Add common parameters as per Tencent Cloud API documentation
+                "Region": sts_credentials["region"],
+                "Version": "2019-04-23",  # IoT Explorer API version
+                "Token": sts_credentials["token"]  # STS temporary token
+            }
+            req.from_json_string(json.dumps(params))
+            
+            # Send request to get device status
+            resp = client.GetDeviceStatus(req)
+            
+            result = {
+                "status": "success",
+                "product_id": product_id,
+                "device_name": device_name,
+                "device_status": {
+                    "online": resp.Online,
+                    "last_online_time": resp.LastOnlineTime,
+                    "last_offline_time": resp.LastOfflineTime,
+                    "client_ip": resp.ClientIP,
+                    "device_cert": resp.DeviceCert,
+                    "device_secret": resp.DeviceSecret
+                },
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            self.logger.info(f"Successfully queried device status for {product_id}/{device_name}")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get device status: {str(e)}")
             raise
 
     def _generate_fallback_pattern(self, width: int, height: int, image_data: str) -> Dict[str, Any]:

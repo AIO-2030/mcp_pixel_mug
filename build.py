@@ -283,22 +283,48 @@ if __name__ == "__main__":
                     print("❌ Failed to install PyInstaller")
                     return False
             
-            # Run the build script
-            build_script = self.project_root / "build_exec.sh"
-            if build_script.exists():
-                result = subprocess.run(
-                    ["bash", str(build_script), mode],
-                    cwd=self.project_root
-                )
+            # Build executable using PyInstaller
+            if mode == "stdio":
+                spec_file = self.project_root / "pixelmug_stdio.spec"
+                exe_name = "pixelmug_stdio"
+            elif mode == "mcp":
+                spec_file = self.project_root / "pixelmug_interactive.spec"
+                exe_name = "pixelmug_interactive"
+            else:
+                print(f"❌ Unknown mode: {mode}")
+                return False
+            
+            if not spec_file.exists():
+                print(f"❌ Spec file not found: {spec_file}")
+                return False
+            
+            # Clean previous build
+            build_dir = self.project_root / "build" / exe_name
+            if build_dir.exists():
+                shutil.rmtree(build_dir)
+            
+            # Run PyInstaller
+            print(f"   Building {exe_name} using {spec_file}")
+            result = subprocess.run(
+                [sys.executable, "-m", "PyInstaller", "--clean", str(spec_file)],
+                cwd=self.project_root
+            )
+            
+            if result.returncode == 0:
+                # Move executable to dist directory
+                exe_source = self.project_root / "dist" / exe_name
+                exe_dest = self.dist_dir / exe_name
                 
-                if result.returncode == 0:
-                    print("✅ Executable build completed")
+                if exe_source.exists():
+                    shutil.move(str(exe_source), str(exe_dest))
+                    exe_dest.chmod(0o755)
+                    print(f"✅ Executable {exe_name} created successfully")
                     return True
                 else:
-                    print("❌ Executable build failed")
+                    print(f"❌ Executable {exe_name} not found after build")
                     return False
             else:
-                print("❌ build_exec.sh not found")
+                print("❌ PyInstaller build failed")
                 return False
                 
         except Exception as e:
@@ -320,7 +346,15 @@ def main():
         elif command == "test":
             builder.run_tests()
         elif command == "build":
-            builder.build_package()
+            # Build both executables
+            success = True
+            success &= builder.build_executable("stdio")
+            success &= builder.build_executable("mcp")
+            if success:
+                print("✅ All executables built successfully")
+            else:
+                print("❌ Some executables failed to build")
+                sys.exit(1)
         elif command == "validate":
             builder.validate_project()
         elif command == "all":
