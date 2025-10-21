@@ -211,3 +211,4 @@ __marimo__/
 export_env_local.sh
 *.env
 *_local.sh
+env.template
