@@ -33,7 +33,7 @@ NC='\033[0m' # No Color
 # 格式: qcs::cam::uin/{UIN}:roleName/{角色名称}
 # 获取方式: 腾讯云控制台 -> 访问管理 -> 角色 -> 选择角色 -> 复制角色ARN
 # 当前配置: alaya_mcp 角色 (alaya network authority)
-export IOT_ROLE_ARN="qcs::cam::uin/123456789:roleName/alaya_mcp"
+export IOT_ROLE_ARN="qcs::cam::uin/100043941809:roleName/alaya_mcp"
 
 # =============================================================================
 # 腾讯云访问凭证 - 必须配置

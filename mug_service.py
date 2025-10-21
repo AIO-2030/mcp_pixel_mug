@@ -92,13 +92,14 @@ class MugService:
                     "params": {
                         "product_id": "Product ID",
                         "device_name": "Device name", 
-                        "gif_data": "Base64 encoded GIF or frame array",
+                        "gif_data": "Base64 encoded GIF, frame array, or palette format",
                         "frame_delay": "Delay between frames in ms (optional, default: 100)",
                         "loop_count": "Number of loops (optional, default: 0 for infinite)",
                         "target_width": "Target width (optional, default: 16)",
                         "target_height": "Target height (optional, default: 16)",
                         "use_cos": "Enable COS upload (optional, default: True)",
-                        "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)"
+                        "ttl_sec": "COS signed URL TTL in seconds (optional, default: 900)",
+                        "sta_port": "Port for device communication (optional, default: 80)"
                     }
                 },
                 {
@@ -118,11 +119,21 @@ class MugService:
                         "product_id": "Product ID, e.g.: ABC123DEF",
                         "device_name": "Device name, e.g.: mug_001"
                     }
+                },
+                {
+                    "name": "send_display_text",
+                    "description": "Send text to display on smart mug screen via CallDeviceActionAsync",
+                    "params": {
+                        "product_id": "Product ID, e.g.: H3PI4FBTV5",
+                        "device_name": "Device name, e.g.: mug_001",
+                        "text": "Text to display (0-200 characters, empty string allowed)"
+                    }
                 }
             ],
             "supported_actions": [
                 {"action": "send_pixel_image", "description": "Send pixel image via Tencent Cloud IoT", "params": {"image_data": "Pixel data or base64 image", "width": "Image width", "height": "Image height"}},
-                {"action": "send_gif_animation", "description": "Send GIF animation via Tencent Cloud IoT", "params": {"gif_data": "GIF frame data", "frame_delay": "Frame delay (ms)", "loop_count": "Loop count"}}
+                {"action": "run_display_gif", "description": "Send GIF animation via Tencent Cloud IoT with device model parameters", "params": {"sta_file_name": "GIF filename", "sta_file_len": "File size in bytes", "sta_file_url": "COS download URL", "sta_port": "Communication port"}},
+                {"action": "send_display_text", "description": "Send text to display on smart mug screen via CallDeviceActionAsync", "params": {"text": "Text to display (0-200 characters, empty string allowed)"}}
             ],
             "pixel_art_examples": self._generate_pixel_examples(),
             "pixel_art_formats": {
@@ -144,6 +155,9 @@ class MugService:
             role_arn = os.getenv("IOT_ROLE_ARN")
             if not role_arn:
                 raise ValueError("Environment variable IOT_ROLE_ARN is not set")
+            
+            # Log the role ARN being used for debugging
+            self.logger.info(f"Using role ARN: {role_arn}")
             
             region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             
@@ -197,8 +211,27 @@ class MugService:
             return result
             
         except Exception as e:
-            self.logger.error(f"Failed to issue STS credentials: {str(e)}")
-            raise
+            error_msg = str(e)
+            self.logger.error(f"Failed to issue STS credentials: {error_msg}")
+            
+            # Get caller identity for debugging
+            caller_info = self._get_caller_identity()
+            self.logger.info(f"Caller identity: {caller_info}")
+            
+            # Provide specific guidance for common STS errors
+            if "role not exist" in error_msg.lower():
+                raise ValueError(f"Role assumption failed: 'role not exist'. "
+                               f"This typically means: 1) The role '{role_arn}' exists but the sub-account lacks permission to assume it, "
+                               f"2) The role's trust policy doesn't allow this sub-account to assume it, "
+                               f"3) The sub-account doesn't have sts:AssumeRole permission. "
+                               f"Caller info: {caller_info}. "
+                               f"Please check the role's trust policy in CAM console and ensure it includes the sub-account UIN.")
+            elif "access denied" in error_msg.lower():
+                raise ValueError(f"Access denied. Please check sub-account permissions for sts:AssumeRole. Caller info: {caller_info}")
+            elif "invalid role" in error_msg.lower():
+                raise ValueError(f"Invalid role ARN format: {role_arn}")
+            else:
+                raise
     
     def _get_base_credentials(self):
         """Get base credentials for initial STS call
@@ -237,13 +270,47 @@ class MugService:
         except Exception:
             return "unknown-account"
     
-    def _get_tencent_credentials(self, sts_credentials: Dict[str, Any] = None):
+    def _get_caller_identity(self) -> Dict[str, Any]:
+        """Get caller identity information for debugging STS issues"""
+        try:
+            if not TENCENT_CLOUD_AVAILABLE:
+                return {"error": "Tencent Cloud SDK not available"}
+            
+            # Get base credentials
+            base_cred = self._get_base_credentials()
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+            
+            # Create STS client
+            httpProfile = HttpProfile()
+            httpProfile.endpoint = "sts.tencentcloudapi.com"
+            clientProfile = ClientProfile()
+            clientProfile.httpProfile = httpProfile
+            client = sts_client.StsClient(base_cred, region, clientProfile)
+            
+            # Call GetCallerIdentity
+            req = sts_models.GetCallerIdentityRequest()
+            resp = client.GetCallerIdentity(req)
+            
+            return {
+                "arn": resp.Arn,
+                "account_id": resp.AccountId,
+                "user_id": resp.UserId,
+                "principal_id": resp.PrincipalId
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get caller identity: {str(e)}")
+            return {"error": str(e)}
+    
+    def _get_tencent_credentials(self, sts_credentials: Dict[str, Any] = None, use_direct_credentials: bool = False):
         """Get Tencent Cloud credentials for ALAYA network operations
         
-        In ALAYA network, we should use STS temporary credentials for all operations
+        Args:
+            sts_credentials: STS temporary credentials (preferred for ALAYA network)
+            use_direct_credentials: If True, use sub-account credentials directly without STS
         """
         try:
-            if sts_credentials:
+            if sts_credentials and not use_direct_credentials:
                 # Use STS temporary credentials (preferred for ALAYA network)
                 self.logger.info("Using STS temporary credentials for ALAYA network operations")
                 return credential.Credential(
@@ -251,6 +318,10 @@ class MugService:
                     sts_credentials["tmpSecretKey"],
                     sts_credentials["token"]
                 )
+            elif use_direct_credentials:
+                # Use sub-account credentials directly
+                self.logger.info("Using sub-account credentials directly (bypassing STS)")
+                return self._get_base_credentials()
             else:
                 # This should not happen in ALAYA network - all operations should use STS
                 raise ValueError("STS credentials required for ALAYA network operations")
@@ -333,22 +404,28 @@ class MugService:
             return False
     
 
-    def _create_iot_client_with_sts(self, sts_credentials: Dict[str, Any]):
-        """Create Tencent Cloud IoT Explorer client with STS temporary credentials"""
+    def _create_iot_client_with_sts(self, sts_credentials: Dict[str, Any] = None, use_direct_credentials: bool = False):
+        """Create Tencent Cloud IoT Explorer client with STS temporary credentials or direct sub-account credentials"""
         try:
             # Check if IoT Explorer SDK is available
             if not IOT_EXPLORER_AVAILABLE:
                 raise ImportError("Tencent Cloud IoT Explorer SDK not installed, please install tencentcloud-sdk-python-iotexplorer")
             
-            # Create credentials with STS temporary credentials
-            cred = credential.Credential(
-                sts_credentials["tmpSecretId"],
-                sts_credentials["tmpSecretKey"],
-                sts_credentials["token"]
-            )
-            
-            # Get region from STS credentials
-            region = sts_credentials["region"]
+            # Create credentials
+            if use_direct_credentials:
+                # Use sub-account credentials directly
+                cred = self._get_base_credentials()
+                region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+                self.logger.info(f"Using sub-account credentials directly for IoT operations in region {region}")
+            else:
+                # Use STS temporary credentials
+                cred = credential.Credential(
+                    sts_credentials["tmpSecretId"],
+                    sts_credentials["tmpSecretKey"],
+                    sts_credentials["token"]
+                )
+                region = sts_credentials["region"]
+                self.logger.info(f"Using STS temporary credentials for IoT operations in region {region}")
             
             # Configure HTTP and Client Profile
             httpProfile = HttpProfile()
@@ -357,14 +434,14 @@ class MugService:
             clientProfile = ClientProfile()
             clientProfile.httpProfile = httpProfile
             
-            # Create IoT Explorer client with STS credentials
+            # Create IoT Explorer client
             client = iotexplorer_client.IotexplorerClient(cred, region, clientProfile)
             
-            self.logger.info(f"Successfully created IoT Explorer client with STS credentials for region {region}")
+            self.logger.info(f"Successfully created IoT Explorer client for region {region}")
             return client
             
         except Exception as e:
-            self.logger.error(f"Failed to create IoT Explorer client with STS: {str(e)}")
+            self.logger.error(f"Failed to create IoT Explorer client: {str(e)}")
             raise
 
     def _push_asset_to_cos(self, product_id: str, device_name: str, asset_data: bytes, 
@@ -460,14 +537,11 @@ class MugService:
 
     def send_pixel_image(self, product_id: str, device_name: str, image_data: Union[str, List, Dict], 
                         target_width: int = 16, target_height: int = 16, 
-                        use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
+                        use_cos: bool = True, ttl_sec: int = 900, use_direct_credentials: bool = True) -> Dict[str, Any]:
         """Send pixel image to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
-            # Get STS credentials for device access
-            sts_credentials = self.issue_sts(product_id, device_name)
-            
-            # Create IoT client with STS credentials
-            client = self._create_iot_client_with_sts(sts_credentials)
+            # Create IoT client with direct credentials for stdio mode
+            client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
             
             # Process image data
             if isinstance(image_data, str):
@@ -521,53 +595,57 @@ class MugService:
                     self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
                     use_cos = False
             
-            # Prepare input parameters for IoT device action
-            input_params = {
-                "action": "display_pixel_image",
-                "width": width,
-                "height": height,
-                "pixel_data": pixel_matrix,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-            }
+            # Convert pixel matrix to single frame GIF for display
+            # Since device only supports GIF action, we'll create a single frame GIF
+            frames = [{
+                "frame_index": 0,
+                "pixel_matrix": pixel_matrix,
+                "duration": 1000  # 1 second display
+            }]
             
-            # Add COS asset info if available - use new payload format
+            # Create GIF from single frame
+            gif_bytes = self._create_gif_from_frames(frames, 1000, 0)  # No loop
+            
+            # Prepare input parameters for GIF action according to device model
             if use_cos and asset_info:
-                # Generate nonce for security
-                nonce = hashlib.md5(f"{asset_info['assetId']}{datetime.datetime.utcnow().timestamp()}".encode()).hexdigest()[:8]
-                current_ts = int(datetime.datetime.utcnow().timestamp())
+                # Use COS upload for GIF
+                # Determine port based on URL protocol
+                url = asset_info["url"]
+                if url.startswith("https://"):
+                    port = 443
+                else:
+                    port = 80
                 
-                input_params.update({
-                    "method": "control.push_asset",
-                    "clientToken": f"cmd_{current_ts}",
-                    "params": {
-                        "assetId": asset_info["assetId"],
-                        "type": asset_info["contentType"],
-                        "url": asset_info["url"],
-                        "bytes": asset_info["bytes"],
-                        "hash": f"sha256:{asset_info['sha256']}",
-                        "width": asset_info["width"],
-                        "height": asset_info["height"],
-                        "loop": False,
-                        "expiresAt": asset_info["expiresAt"],
-                        "nonce": nonce,
-                        "ts": current_ts
-                    },
-                    "delivery_method": "cos"
-                })
+                input_params = {
+                    "sta_file_name": f"pixel_{asset_info['assetId']}.gif",
+                    "sta_file_len": len(gif_bytes),
+                    "sta_file_url": url,
+                    "sta_port": port
+                }
+                delivery_method = "cos"
             else:
-                input_params["delivery_method"] = "direct"
+                # For direct transmission, use device model parameters
+                temp_filename = f"pixel_{int(datetime.datetime.utcnow().timestamp())}.gif"
+                
+                input_params = {
+                    "sta_file_name": temp_filename,
+                    "sta_file_len": len(gif_bytes),
+                    "sta_file_url": "direct_transmission",  # Placeholder for direct transmission
+                    "sta_port": 80
+                }
+                delivery_method = "direct"
             
             # Create CallDeviceActionAsync request with complete common parameters
             req = iot_models.CallDeviceActionAsyncRequest()
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             params = {
                 "ProductId": product_id,
                 "DeviceName": device_name,
-                "ActionId": "display_pixel_image",
+                "ActionId": "run_display_gif",  # Use existing GIF action
                 "InputParams": json.dumps(input_params),
                 # Add common parameters as per Tencent Cloud API documentation
-                "Region": sts_credentials["region"],
-                "Version": "2019-04-23",  # IoT Explorer API version
-                "Token": sts_credentials["token"]  # STS temporary token
+                "Region": region,
+                "Version": "2019-04-23"  # IoT Explorer API version
             }
             req.from_json_string(json.dumps(params))
             
@@ -581,13 +659,15 @@ class MugService:
                 "request_id": resp.RequestId,
                 "product_id": product_id,
                 "device_name": device_name,
-                "action_id": "display_pixel_image",
+                "action_id": "run_display_gif",  # Updated to use GIF action
                 "image_info": {
                     "width": width,
                     "height": height,
-                    "total_pixels": width * height
+                    "total_pixels": width * height,
+                    "converted_to_gif": True,
+                    "frame_count": 1
                 },
-                "delivery_method": "cos" if use_cos else "direct",
+                "delivery_method": delivery_method,
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
             
@@ -662,22 +742,98 @@ class MugService:
             self.logger.error(f"Failed to process GIF: {str(e)}")
             raise
 
+    def _create_gif_from_frames(self, frames: List[Dict], frame_delay: int = 100, loop_count: int = 0) -> bytes:
+        """Create GIF file bytes from frame data"""
+        try:
+            if not PIL_AVAILABLE:
+                raise ImportError("PIL not available for GIF creation")
+            
+            if not frames:
+                raise ValueError("No frames provided for GIF creation")
+            
+            # Get dimensions from first frame
+            first_frame = frames[0]
+            pixel_matrix = first_frame["pixel_matrix"]
+            height = len(pixel_matrix)
+            width = len(pixel_matrix[0]) if pixel_matrix else 0
+            
+            # Create PIL images for each frame
+            pil_frames = []
+            durations = []
+            
+            for frame in frames:
+                pixel_matrix = frame["pixel_matrix"]
+                duration = frame.get("duration", frame_delay)
+                
+                # Create PIL image from pixel matrix
+                img = Image.new('RGB', (width, height))
+                
+                for y in range(height):
+                    for x in range(width):
+                        color_hex = pixel_matrix[y][x]
+                        # Convert hex color to RGB
+                        if color_hex.startswith('#'):
+                            color_hex = color_hex[1:]
+                        r = int(color_hex[0:2], 16)
+                        g = int(color_hex[2:4], 16)
+                        b = int(color_hex[4:6], 16)
+                        img.putpixel((x, y), (r, g, b))
+                
+                pil_frames.append(img)
+                durations.append(duration)
+            
+            # Create GIF
+            gif_buffer = io.BytesIO()
+            
+            # Save as GIF with proper parameters
+            pil_frames[0].save(
+                gif_buffer,
+                format='GIF',
+                save_all=True,
+                append_images=pil_frames[1:],
+                duration=durations,
+                loop=loop_count if loop_count > 0 else 0,  # 0 means infinite loop
+                optimize=True
+            )
+            
+            gif_bytes = gif_buffer.getvalue()
+            gif_buffer.close()
+            
+            self.logger.info(f"Created GIF with {len(frames)} frames, {len(gif_bytes)} bytes")
+            return gif_bytes
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create GIF from frames: {str(e)}")
+            raise
+
     def send_gif_animation(self, product_id: str, device_name: str, gif_data: Union[str, List, Dict], 
                           frame_delay: int = 100, loop_count: int = 0, 
                           target_width: int = 16, target_height: int = 16,
-                          use_cos: bool = True, ttl_sec: int = 900) -> Dict[str, Any]:
+                          use_cos: bool = True, ttl_sec: int = 900, sta_port: int = 80, use_direct_credentials: bool = True) -> Dict[str, Any]:
         """Send GIF pixel animation to device via Tencent Cloud IoT Explorer with optional COS upload"""
         try:
-            # Get STS credentials for device access
-            sts_credentials = self.issue_sts(product_id, device_name)
-            
-            # Create IoT client with STS credentials
-            client = self._create_iot_client_with_sts(sts_credentials)
+            # Create IoT client with direct credentials for stdio mode
+            client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
             
             # Process GIF data
+            frames = None
+            gif_bytes = None
+            
             if isinstance(gif_data, str):
-                # If it's base64 encoded GIF, process to frames
-                frames = self._process_gif_to_frames(gif_data, target_width, target_height)
+                # If it's base64 encoded GIF, we can use it directly or process to frames
+                try:
+                    # Try to decode as base64 GIF first
+                    gif_bytes = base64.b64decode(gif_data)
+                    # Validate it's a GIF by trying to open it
+                    if PIL_AVAILABLE:
+                        test_img = Image.open(io.BytesIO(gif_bytes))
+                        if test_img.format != 'GIF':
+                            # Not a GIF, process as frames
+                            frames = self._process_gif_to_frames(gif_data, target_width, target_height)
+                            gif_bytes = None
+                except Exception:
+                    # If base64 decode fails, treat as frame data
+                    frames = self._process_gif_to_frames(gif_data, target_width, target_height)
             elif isinstance(gif_data, dict) and "frames" in gif_data:
                 # If it's palette-based GIF format
                 frames = self._process_palette_gif_animation(gif_data, target_width, target_height)
@@ -685,93 +841,87 @@ class MugService:
                 # If it's already frame array
                 frames = gif_data
                 
-            # Validate frames
-            if not frames:
-                raise ValueError("No frames found in GIF data")
+            # Validate we have either frames or GIF bytes
+            if not frames and not gif_bytes:
+                raise ValueError("No valid GIF data found")
             
             # Prepare asset data for COS upload if enabled
             asset_info = None
             if use_cos:
                 try:
-                    # Generate asset ID
+                    # Generate asset ID and filename
                     asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
+                    file_name = f"gif_{asset_id}.gif"
                     
-                    # Convert frames to JSON bytes
-                    asset_data = json.dumps({
-                        "kind": "gif",
-                        "frame_count": len(frames),
-                        "frames": frames,
-                        "frame_delay": frame_delay,
-                        "loop_count": loop_count,
-                        "width": target_width,
-                        "height": target_height,
-                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-                    }).encode('utf-8')
+                    # Create GIF file if we have frames
+                    if frames and not gif_bytes:
+                        gif_bytes = self._create_gif_from_frames(frames, frame_delay, loop_count)
                     
                     # Prepare metadata
                     metadata = {
                         "width": target_width,
                         "height": target_height,
-                        "frame_count": len(frames)
+                        "frame_count": len(frames) if frames else 1
                     }
                     
-                    # Upload to COS
-                    asset_info = self._push_asset_to_cos(product_id, device_name, asset_data, "gif", asset_id, metadata, ttl_sec)
-                    self.logger.info(f"Successfully uploaded GIF animation to COS: {asset_info['key']}")
+                    # Upload actual GIF file to COS
+                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec)
+                    # Override filename in asset_info
+                    asset_info["file_name"] = file_name
+                    self.logger.info(f"Successfully uploaded GIF file to COS: {asset_info['key']}")
                 except Exception as e:
                     self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
                     use_cos = False
-                
-            # Prepare input parameters for IoT device action
-            input_params = {
-                "action": "display_gif_animation",
-                "frame_count": len(frames),
-                "frames": frames,
-                "frame_delay": frame_delay,
-                "loop_count": loop_count,
-                "width": target_width,
-                "height": target_height,
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-            }
             
-            # Add COS asset info if available - use new payload format
+            # Prepare input parameters according to device model
             if use_cos and asset_info:
-                # Generate nonce for security
-                nonce = hashlib.md5(f"{asset_info['assetId']}{datetime.datetime.utcnow().timestamp()}".encode()).hexdigest()[:8]
-                current_ts = int(datetime.datetime.utcnow().timestamp())
+                # Use device model parameters: sta_file_name, sta_file_len, sta_file_url, sta_port
+                # Determine port based on URL protocol
+                url = asset_info["url"]
+                if url.startswith("https://"):
+                    port = 443
+                else:
+                    port = 80
                 
-                input_params.update({
-                    "method": "control.push_asset",
-                    "clientToken": f"cmd_{current_ts}",
-                    "params": {
-                        "assetId": asset_info["assetId"],
-                        "type": asset_info["contentType"],
-                        "url": asset_info["url"],
-                        "bytes": asset_info["bytes"],
-                        "hash": f"sha256:{asset_info['sha256']}",
-                        "width": asset_info["width"],
-                        "height": asset_info["height"],
-                        "loop": loop_count != 0,
-                        "expiresAt": asset_info["expiresAt"],
-                        "nonce": nonce,
-                        "ts": current_ts
-                    },
-                    "delivery_method": "cos"
-                })
+                input_params = {
+                    "sta_file_name": asset_info["file_name"],
+                    "sta_file_len": asset_info["bytes"],
+                    "sta_file_url": url,
+                    "sta_port": port
+                }
+                delivery_method = "cos"
             else:
-                input_params["delivery_method"] = "direct"
+                # For direct transmission, we need to create a temporary GIF and upload it
+                # Since device model only accepts COS parameters, we'll create a minimal GIF
+                if not frames:
+                    raise ValueError("Cannot send GIF without frames when COS is disabled")
+                
+                # Create GIF from frames
+                gif_bytes = self._create_gif_from_frames(frames, frame_delay, loop_count)
+                
+                # For direct transmission, we'll use a simple approach
+                # Generate a temporary filename
+                temp_filename = f"temp_gif_{int(datetime.datetime.utcnow().timestamp())}.gif"
+                
+                input_params = {
+                    "sta_file_name": temp_filename,
+                    "sta_file_len": len(gif_bytes),
+                    "sta_file_url": "direct_transmission",  # Placeholder for direct transmission
+                    "sta_port": 80
+                }
+                delivery_method = "direct"
             
             # Create CallDeviceActionAsync request with complete common parameters
             req = iot_models.CallDeviceActionAsyncRequest()
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             params = {
                 "ProductId": product_id,
                 "DeviceName": device_name,
-                "ActionId": "display_gif_animation",
+                "ActionId": "run_display_gif",  # Use device model action ID
                 "InputParams": json.dumps(input_params),
                 # Add common parameters as per Tencent Cloud API documentation
-                "Region": sts_credentials["region"],
-                "Version": "2019-04-23",  # IoT Explorer API version
-                "Token": sts_credentials["token"]  # STS temporary token
+                "Region": region,
+                "Version": "2019-04-23"  # IoT Explorer API version
             }
             req.from_json_string(json.dumps(params))
             
@@ -785,16 +935,16 @@ class MugService:
                 "request_id": resp.RequestId,
                 "product_id": product_id,
                 "device_name": device_name,
-                "action_id": "display_gif_animation",
+                "action_id": "run_display_gif",
                 "animation_info": {
-                    "frame_count": len(frames),
+                    "frame_count": len(frames) if frames else 1,
                     "frame_delay": frame_delay,
                     "loop_count": loop_count,
                     "width": target_width,
                     "height": target_height,
                     "total_pixels": target_width * target_height
                 },
-                "delivery_method": "cos" if use_cos else "direct",
+                "delivery_method": delivery_method,
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
             
@@ -1065,6 +1215,10 @@ class MugService:
                 "height": {"type": int, "min": 1, "max": 128},
                 "frame_delay": {"type": int, "min": 10, "max": 5000, "default": 100},
                 "loop_count": {"type": int, "min": 0, "max": 1000, "default": 0}
+            },
+            "run_display_text": {
+                "required": ["set_text"],
+                "set_text": {"type": str, "min_length": 0, "max_length": 200, "description": "Text to display on screen"}
             }
         }
         
@@ -1104,6 +1258,8 @@ class MugService:
                 
                 # Length checking for strings
                 if isinstance(param_value, str):
+                    if "min_length" in rule and len(param_value) < rule["min_length"]:
+                        raise ValueError(f"Parameter {param_name} too short, minimum length: {rule['min_length']}")
                     if "max_length" in rule and len(param_value) > rule["max_length"]:
                         raise ValueError(f"Parameter {param_name} too long, maximum length: {rule['max_length']}")
                     if "choices" in rule and param_value not in rule["choices"]:
@@ -1199,41 +1355,41 @@ class MugService:
             self.logger.error(f"Failed to convert image to pixels: {str(e)}")
             raise
 
-    def get_device_status(self, product_id: str, device_name: str) -> Dict[str, Any]:
+    def get_device_status(self, product_id: str, device_name: str, use_direct_credentials: bool = True) -> Dict[str, Any]:
         """Query device online status and basic information"""
         try:
-            # Get STS credentials for device access
-            sts_credentials = self.issue_sts(product_id, device_name)
+            # Create IoT client with direct credentials for stdio mode
+            client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
             
-            # Create IoT client with STS credentials
-            client = self._create_iot_client_with_sts(sts_credentials)
-            
-            # Create GetDeviceStatus request with complete common parameters
-            req = iot_models.GetDeviceStatusRequest()
+            # Create DescribeDevice request with complete common parameters
+            req = iot_models.DescribeDeviceRequest()
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             params = {
                 "ProductId": product_id,
                 "DeviceName": device_name,
                 # Add common parameters as per Tencent Cloud API documentation
-                "Region": sts_credentials["region"],
-                "Version": "2019-04-23",  # IoT Explorer API version
-                "Token": sts_credentials["token"]  # STS temporary token
+                "Region": region,
+                "Version": "2019-04-23"  # IoT Explorer API version
             }
             req.from_json_string(json.dumps(params))
             
             # Send request to get device status
-            resp = client.GetDeviceStatus(req)
+            resp = client.DescribeDevice(req)
             
             result = {
                 "status": "success",
                 "product_id": product_id,
                 "device_name": device_name,
                 "device_status": {
-                    "online": resp.Online,
-                    "last_online_time": resp.LastOnlineTime,
-                    "last_offline_time": resp.LastOfflineTime,
-                    "client_ip": resp.ClientIP,
-                    "device_cert": resp.DeviceCert,
-                    "device_secret": resp.DeviceSecret
+                    "online": resp.Device.Status == 1,  # 1表示在线
+                    "last_online_time": getattr(resp.Device, 'FirstOnlineTime', None),
+                    "last_offline_time": getattr(resp.Device, 'LastOfflineTime', None),
+                    "client_ip": getattr(resp.Device, 'ClientIP', None),
+                    "device_cert": getattr(resp.Device, 'DeviceCert', None),
+                    "device_secret": getattr(resp.Device, 'DeviceSecret', None),
+                    "enable_state": getattr(resp.Device, 'EnableState', None),
+                    "device_type": getattr(resp.Device, 'DeviceType', None),
+                    "product_name": getattr(resp.Device, 'ProductName', None)
                 },
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
             }
@@ -1243,6 +1399,75 @@ class MugService:
             
         except Exception as e:
             self.logger.error(f"Failed to get device status: {str(e)}")
+            raise
+
+    def send_display_text(self, product_id: str, device_name: str, text: str, use_direct_credentials: bool = True) -> Dict[str, Any]:
+        """Send text to display on smart mug screen via CallDeviceActionAsync
+        
+        Args:
+            product_id: Product ID
+            device_name: Device name
+            text: Text to display
+            use_direct_credentials: If True, use sub-account credentials directly without STS
+        """
+        try:
+            # Validate text input
+            if not isinstance(text, str):
+                raise ValueError("Text must be a string")
+            
+            if len(text) > 200:
+                raise ValueError(f"Text length {len(text)} exceeds maximum limit of 200 characters")
+            
+            # Create IoT client with direct credentials for stdio mode
+            client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+            
+            # Prepare input parameters for device action
+            input_params = {
+                "set_text": text
+            }
+            
+            # Create CallDeviceActionAsync request
+            req = iot_models.CallDeviceActionAsyncRequest()
+            params = {
+                "ProductId": product_id,
+                "DeviceName": device_name,
+                "ActionId": "run_display_text",
+                "InputParams": json.dumps(input_params),
+                # Add common parameters as per Tencent Cloud API documentation
+                "Region": region,
+                "Version": "2019-04-23",  # IoT Explorer API version
+            }
+            
+            # No token needed for direct credentials
+            
+            req.from_json_string(json.dumps(params))
+            
+            # Send request to device
+            resp = client.CallDeviceActionAsync(req)
+            
+            result = {
+                "status": "success",
+                "client_token": resp.ClientToken,
+                "call_status": resp.Status,
+                "request_id": resp.RequestId,
+                "product_id": product_id,
+                "device_name": device_name,
+                "action_id": "run_display_text",
+                "text_info": {
+                    "text": text,
+                    "length": len(text),
+                    "max_length": 200
+                },
+                "credential_type": "direct_subaccount" if use_direct_credentials else "sts_temporary",
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
+            }
+            
+            self.logger.info(f"Successfully sent display text to device {product_id}/{device_name}: '{text[:50]}{'...' if len(text) > 50 else ''}'")
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Failed to send display text: {str(e)}")
             raise
 
     def _generate_fallback_pattern(self, width: int, height: int, image_data: str) -> Dict[str, Any]:
@@ -1443,13 +1668,14 @@ if FASTAPI_AVAILABLE:
     async def send_gif_animation_endpoint(
         pid: str = Query(..., description="Product ID"),
         dn: str = Query(..., description="Device name"),
-        gif_data: str = Query(..., description="Base64 encoded GIF or frame array JSON"),
+        gif_data: str = Query(..., description="Base64 encoded GIF, frame array JSON, or palette format"),
         frame_delay: int = Query(100, description="Frame delay in milliseconds"),
         loop_count: int = Query(0, description="Loop count (0 for infinite)"),
         width: int = Query(16, description="Target width"),
         height: int = Query(16, description="Target height"),
         use_cos: bool = Query(True, description="Enable COS upload"),
         ttl_sec: int = Query(900, description="COS signed URL TTL in seconds"),
+        sta_port: int = Query(80, description="Port for device communication"),
         user_id: str = Query("default_user", description="User ID (for authorization)")
     ):
         """
@@ -1458,11 +1684,14 @@ if FASTAPI_AVAILABLE:
         Args:
             pid: Product ID
             dn: Device name
-            gif_data: Base64 encoded GIF or JSON encoded frame array
+            gif_data: Base64 encoded GIF, frame array JSON, or palette format
             frame_delay: Frame delay in milliseconds (default: 100)
             loop_count: Loop count, 0 for infinite (default: 0)
             width: Target width (default: 16)
             height: Target height (default: 16)
+            use_cos: Enable COS upload (default: True)
+            ttl_sec: COS signed URL TTL in seconds (default: 900)
+            sta_port: Port for device communication (default: 80)
             user_id: User ID (for authorization)
             
         Returns:
@@ -1491,7 +1720,7 @@ if FASTAPI_AVAILABLE:
                 gif_input = gif_data
             
             # Send GIF animation to device
-            result = mug_service.send_gif_animation(pid, dn, gif_input, frame_delay, loop_count, width, height, use_cos, ttl_sec)
+            result = mug_service.send_gif_animation(pid, dn, gif_input, frame_delay, loop_count, width, height, use_cos, ttl_sec, sta_port)
             
             return JSONResponse(
                 status_code=200,
@@ -1508,6 +1737,66 @@ if FASTAPI_AVAILABLE:
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to send GIF animation: {str(e)}"
+            )
+    
+    @app.post("/text/send")
+    async def send_display_text_endpoint(
+        pid: str = Query(..., description="Product ID"),
+        dn: str = Query(..., description="Device name"),
+        text: str = Query(..., description="Text to display (max 200 characters)"),
+        user_id: str = Query("default_user", description="User ID (for authorization)")
+    ):
+        """
+        Send text to display on smart mug screen via device shadow
+        
+        Args:
+            pid: Product ID
+            dn: Device name
+            text: Text to display (max 200 characters)
+            user_id: User ID (for authorization)
+            
+        Returns:
+            JSON containing device shadow response information
+        """
+        try:
+            # Parameter validation
+            if not pid or not dn or not text:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Missing required parameters: pid, dn, and text are required"
+                )
+            
+            if len(text) > 200:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Text length {len(text)} exceeds maximum limit of 200 characters"
+                )
+            
+            # User authorization
+            if not mug_service._authorize(user_id, pid, dn):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"User {user_id} has no permission to access device {pid}/{dn}"
+                )
+            
+            # Send display text to device
+            result = mug_service.send_display_text(pid, dn, text)
+            
+            return JSONResponse(
+                status_code=200,
+                content={
+                    "code": 0,
+                    "message": "Display text sent successfully",
+                    "data": result
+                }
+            )
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to send display text: {str(e)}"
             )
     
     @app.get("/health")
@@ -1541,6 +1830,7 @@ if FASTAPI_AVAILABLE:
                 "issue_sts": "/sts/issue?pid=<ProductId>&dn=<DeviceName>&user_id=<UserId>",
                 "send_pixel": "/pixel/send (POST)",
                 "send_gif": "/gif/send (POST)",
+                "send_text": "/text/send (POST)",
                 "health": "/health",
                 "api_docs": "/docs"
             },
@@ -1565,7 +1855,8 @@ if FASTAPI_AVAILABLE:
             },
             "device_actions": {
                 "display_pixel_image": "Display static pixel image on device screen",
-                "display_gif_animation": "Display animated GIF on device screen"
+                "run_display_gif": "Display animated GIF on device screen with device model parameters (sta_file_name, sta_file_len, sta_file_url, sta_port)",
+                "run_display_text": "Display text on smart mug screen via CallDeviceActionAsync"
             }
         }
 else:

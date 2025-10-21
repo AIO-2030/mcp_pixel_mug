@@ -30,6 +30,24 @@ class MCPServer:
         self.logger = logging.getLogger(__name__)
         self.setup_logging()
         
+        # 固定设备配置 - 调试版本
+        self.fixed_product_id = "H3PI4FBTV5"
+        self.fixed_device_name = "3CDC7580F950"
+        
+        self.logger.info(f"🔧 调试版本 - 固定设备: {self.fixed_product_id}/{self.fixed_device_name}")
+    
+    def _apply_fixed_device(self, params):
+        """覆盖product_id和device_name为固定值"""
+        original_product_id = params.get('product_id', 'None')
+        original_device_name = params.get('device_name', 'None')
+        
+        params['product_id'] = self.fixed_product_id
+        params['device_name'] = self.fixed_device_name
+        
+        self.logger.info(f"🔧 设备覆盖: {original_product_id}/{original_device_name} -> {self.fixed_product_id}/{self.fixed_device_name}")
+        
+        return params
+        
     def setup_logging(self):
         """Configure logging"""
         logging.basicConfig(
@@ -77,6 +95,8 @@ class MCPServer:
                 result = await self._handle_convert_image_to_pixels(params)
             elif method == 'get_device_status':
                 result = await self._handle_get_device_status(params)
+            elif method == 'send_display_text':
+                result = await self._handle_send_display_text(params)
             else:
                 return self._create_error_response(
                     request_id,
@@ -131,6 +151,7 @@ class MCPServer:
     
     async def _handle_issue_sts(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle issue_sts request"""
+        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         user_id = params.get('user_id', 'alaya_user')
@@ -148,6 +169,7 @@ class MCPServer:
     
     async def _handle_send_pixel_image(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle send_pixel_image request"""
+        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         image_data = params.get('image_data')
@@ -166,10 +188,11 @@ class MCPServer:
         if not mug_service._authorize(user_id, product_id, device_name):
             raise ValueError("Device access denied")
         
-        return mug_service.send_pixel_image(product_id, device_name, image_data, target_width, target_height)
+        return mug_service.send_pixel_image(product_id, device_name, image_data, target_width, target_height, use_direct_credentials=True)
     
     async def _handle_send_gif_animation(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle send_gif_animation request"""
+        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         gif_data = params.get('gif_data')
@@ -190,7 +213,7 @@ class MCPServer:
         if not mug_service._authorize(user_id, product_id, device_name):
             raise ValueError("Device access denied")
         
-        return mug_service.send_gif_animation(product_id, device_name, gif_data, frame_delay, loop_count, target_width, target_height)
+        return mug_service.send_gif_animation(product_id, device_name, gif_data, frame_delay, loop_count, target_width, target_height, use_direct_credentials=True)
     
     async def _handle_convert_image_to_pixels(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle convert_image_to_pixels request"""
@@ -206,6 +229,7 @@ class MCPServer:
     
     async def _handle_get_device_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_device_status request"""
+        params = self._apply_fixed_device(params)
         product_id = params.get("product_id")
         device_name = params.get("device_name")
         user_id = params.get('user_id', 'alaya_user')
@@ -219,7 +243,30 @@ class MCPServer:
         if not mug_service._authorize(user_id, product_id, device_name):
             raise ValueError("Device access denied")
         
-        return mug_service.get_device_status(product_id, device_name)
+        return mug_service.get_device_status(product_id, device_name, use_direct_credentials=True)
+    
+    async def _handle_send_display_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Handle send_display_text request"""
+        params = self._apply_fixed_device(params)
+        product_id = params.get('product_id')
+        device_name = params.get('device_name')
+        # allow empty string but require the key to exist
+        if 'text' not in params:
+            raise ValueError("Missing required parameter: text")
+        text = params.get('text', "")
+        user_id = params.get('user_id', 'alaya_user')
+        
+        if not product_id:
+            raise ValueError("Missing required parameter: product_id")
+        if not device_name:
+            raise ValueError("Missing required parameter: device_name")
+        if not isinstance(text, str):
+            raise ValueError("Parameter text type error, expected string")
+        
+        if not mug_service._authorize(user_id, product_id, device_name):
+            raise ValueError("Device access denied")
+        
+        return mug_service.send_display_text(product_id, device_name, text, use_direct_credentials=True)
     
     def _create_success_response(self, request_id: Any, result: Any) -> str:
         """Create success response"""
@@ -309,7 +356,7 @@ async def run_server():
     server = MCPServer()
     
     print("MCP PixelMug server started, waiting for requests...")
-    print("Supported methods: help, issue_sts, send_pixel_image, send_gif_animation, convert_image_to_pixels, get_device_status")
+    print("Supported methods: help, issue_sts, send_pixel_image, send_gif_animation, convert_image_to_pixels, get_device_status, send_display_text")
     print("Press Ctrl+C to exit")
     
     try:
