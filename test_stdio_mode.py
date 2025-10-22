@@ -24,7 +24,7 @@ class StdioModeTester:
     
     def __init__(self):
         self.test_product_id = os.getenv("TEST_PRODUCT_ID", "H3PI4FBTV5")
-        self.test_device_name = os.getenv("TEST_DEVICE_NAME", "mug_001")
+        self.test_device_name = os.getenv("TEST_DEVICE_NAME", "3CDC7580F950")
         
     def test_help(self):
         """测试help方法"""
@@ -90,7 +90,7 @@ class StdioModeTester:
                 pixel_pattern,
                 target_width=4,
                 target_height=4,
-                use_cos=False,  # 禁用COS上传，直接传输
+                use_cos=True,  # 禁用COS上传，直接传输
                 use_direct_credentials=True  # 显式使用子账号密钥
             )
             logger.info(f"像素图像发送成功: {result.get('status', 'unknown')}")
@@ -137,7 +137,7 @@ class StdioModeTester:
                 loop_count=1,
                 target_width=4,
                 target_height=4,
-                use_cos=False,  # 禁用COS上传，直接传输
+                use_cos=True,  # 禁用COS上传，直接传输
                 use_direct_credentials=True  # 显式使用子账号密钥
             )
             logger.info(f"GIF动画发送成功: {result.get('status', 'unknown')}")

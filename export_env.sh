@@ -56,7 +56,7 @@ export COS_OWNER_UIN="123456789"
 
 # COS存储桶名称 - 用于存储像素图片和GIF动画
 # 获取方式: 腾讯云控制台 -> 对象存储 -> 存储桶列表
-export COS_BUCKET_NAME="your-bucket-name"
+export COS_BUCKET_NAME="pixelmug-noaz-1375677805"
 
 # COS地域 - 存储桶所在的地域
 # 常用地域: ap-guangzhou, ap-beijing, ap-shanghai
@@ -151,7 +151,7 @@ export TC_SECRET_KEY="your_secret_key"
 
 # COS对象存储配置
 export COS_OWNER_UIN="123456789"
-export COS_BUCKET_NAME="your-bucket-name"
+export COS_BUCKET_NAME="pixelmug-noaz-1375677805"
 export COS_REGION="ap-guangzhou"
 
 # 服务配置
@@ -221,7 +221,7 @@ COS_OWNER_UIN="123456789"
 COS_BUCKET_NAME="your-bucket-name"
 COS_REGION="ap-guangzhou"
 DEFAULT_REGION="ap-guangzhou"
-COS_BUCKET="pixelmug-assets"
+COS_BUCKET="pixmug-1375677805"
 LOG_LEVEL="INFO"
 EOF
     

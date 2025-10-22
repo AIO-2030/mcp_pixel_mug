@@ -1,8 +1,14 @@
 # PixelMug IoT STS Service Dependencies
 
 # 腾讯云SDK
+tencentcloud-sdk-python>=3.0.0
 tencentcloud-sdk-python-sts>=3.0.0
 tencentcloud-sdk-python-iotexplorer>=3.0.0
+tencentcloud-sdk-python-cam>=3.0.0
+tencentcloud-sdk-python-common>=3.0.0
+
+# 腾讯云COS SDK
+cos-python-sdk-v5>=1.9.0
 
 # FastAPI和相关依赖 (可选 - 仅HTTP模式需要)
 # ALAYA网络使用stdio模式，不需要FastAPI

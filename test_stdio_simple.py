@@ -16,7 +16,7 @@ def test_basic_functionality():
     
     # 测试参数
     product_id = os.getenv("TEST_PRODUCT_ID", "H3PI4FBTV5")
-    device_name = os.getenv("TEST_DEVICE_NAME", "mug_001")
+    device_name = os.getenv("TEST_DEVICE_NAME", "3CDC7580F950")
     
     print(f"产品ID: {product_id}")
     print(f"设备名: {device_name}")

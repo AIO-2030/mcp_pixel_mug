@@ -73,7 +73,7 @@ def demo_stdio_mode():
             smiley_pattern,
             target_width=8,
             target_height=8,
-            use_cos=False  # 直接传输，不使用COS
+            use_cos=True  # 直接传输，不使用COS
         )
         print(f"   发送状态: {pixel_result.get('status', 'unknown')}")
         print(f"   传输方式: {pixel_result.get('delivery_method', 'unknown')}")
@@ -117,7 +117,7 @@ def demo_stdio_mode():
             loop_count=1,
             target_width=4,
             target_height=4,
-            use_cos=False  # 直接传输，不使用COS
+            use_cos=True 
         )
         print(f"   发送状态: {gif_result.get('status', 'unknown')}")
         print(f"   传输方式: {gif_result.get('delivery_method', 'unknown')}")

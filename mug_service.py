@@ -35,7 +35,7 @@ except ImportError:
 
 # 腾讯云COS相关依赖
 try:
-    from tencentcloud.cos import CosConfig, CosS3Client
+    from qcloud_cos import CosConfig, CosS3Client
     COS_AVAILABLE = True
 except ImportError:
     COS_AVAILABLE = False
@@ -234,9 +234,14 @@ class MugService:
                 raise
     
     def _get_base_credentials(self):
-        """Get base credentials for initial STS call
+        """Get base credentials for Tencent Cloud operations
         
-        This is used only for the initial STS AssumeRole call.
+        This method is used for various Tencent Cloud operations including:
+        - STS AssumeRole calls
+        - IoT Explorer operations
+        - COS operations
+        - Caller identity verification
+        
         Priority: Sub-account keys > Main account keys
         """
         try:
@@ -247,14 +252,14 @@ class MugService:
             if secret_id and secret_key:
                 # Check if it's sub-account or main account
                 account_type = self._detect_account_type(secret_id)
-                self.logger.info(f"Using {account_type} credentials from environment variables - only for initial STS call")
+                self.logger.info(f"Using {account_type} credentials from environment variables")
                 return credential.Credential(secret_id, secret_key)
             else:
-                raise ValueError("No base credentials available for STS call. Please set TC_SECRET_ID and TC_SECRET_KEY environment variables.")
+                raise ValueError("No base credentials available. Please set TC_SECRET_ID and TC_SECRET_KEY environment variables.")
                 
         except Exception as e:
-            self.logger.error(f"Failed to get base credentials for STS: {str(e)}")
-            raise ValueError("Unable to get base credentials for ALAYA network STS call")
+            self.logger.error(f"Failed to get base credentials: {str(e)}")
+            raise ValueError("Unable to get base credentials for Tencent Cloud operations")
     
     def _detect_account_type(self, secret_id: str) -> str:
         """Detect if the secret_id belongs to main account or sub-account"""
@@ -446,23 +451,34 @@ class MugService:
 
     def _push_asset_to_cos(self, product_id: str, device_name: str, asset_data: bytes, 
                           asset_kind: str, asset_id: str, metadata: Dict[str, Any], 
-                          ttl_sec: int = 300) -> Dict[str, Any]:
+                          ttl_sec: int = 300, use_direct_credentials: bool = True) -> Dict[str, Any]:
         """Push asset to COS and get signed URL with proper key pattern and metadata"""
         try:
             if not COS_AVAILABLE:
                 raise ImportError("Tencent Cloud COS SDK not installed, please install tencentcloud-sdk-python-cos")
             
-            # 1. Get STS credentials
-            sts_info = self.issue_sts(product_id, device_name)
+            # 1. Always use direct credentials for COS operations in stdio mode
+            # STS is not needed for COS operations and may fail due to role permissions
+            cred = self._get_base_credentials()
+            region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
+            sts_info = {
+                "tmpSecretId": cred.secret_id,
+                "tmpSecretKey": cred.secret_key,
+                "token": None,  # No token for direct credentials
+                "region": region
+            }
+            self.logger.info("Using sub-account credentials directly for COS operations (stdio mode)")
             
             # 2. Generate COS client
             cos_config = CosConfig(
                 Region=sts_info["region"],
                 SecretId=sts_info["tmpSecretId"],
                 SecretKey=sts_info["tmpSecretKey"],
-                Token=sts_info["token"],
+                Token=sts_info.get("token"),  # Token may be None for direct credentials
                 Scheme="https"
             )
+            
+            # Single-AZ bucket configuration (no multi-AZ support needed)
             cos_client = CosS3Client(cos_config)
             
             # 3. Generate SHA256 hash and key with new pattern
@@ -495,7 +511,7 @@ class MugService:
             }
             
             # 6. Upload to COS with metadata and cache headers
-            bucket_name = os.getenv("COS_BUCKET", "pixelmug-assets")
+            bucket_name = os.getenv("COS_BUCKET_NAME", "pixelmug-assets")
             cos_client.put_object(
                 Bucket=bucket_name,
                 Body=asset_data,
@@ -565,36 +581,6 @@ class MugService:
             # Validate pixel matrix
             self._validate_pixel_pattern(pixel_matrix, width, height)
             
-            # Prepare asset data for COS upload if enabled
-            asset_info = None
-            if use_cos:
-                try:
-                    # Generate asset ID
-                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
-                    
-                    # Convert pixel matrix to JSON bytes
-                    asset_data = json.dumps({
-                        "kind": "pixel-json",
-                        "width": width,
-                        "height": height,
-                        "pixel_data": pixel_matrix,
-                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
-                    }).encode('utf-8')
-                    
-                    # Prepare metadata
-                    metadata = {
-                        "width": width,
-                        "height": height,
-                        "frame_count": 1
-                    }
-                    
-                    # Upload to COS
-                    asset_info = self._push_asset_to_cos(product_id, device_name, asset_data, "pixel-json", asset_id, metadata, ttl_sec)
-                    self.logger.info(f"Successfully uploaded pixel image to COS: {asset_info['key']}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
-                    use_cos = False
-            
             # Convert pixel matrix to single frame GIF for display
             # Since device only supports GIF action, we'll create a single frame GIF
             frames = [{
@@ -605,6 +591,27 @@ class MugService:
             
             # Create GIF from single frame
             gif_bytes = self._create_gif_from_frames(frames, 1000, 0)  # No loop
+            
+            # Prepare asset data for COS upload if enabled (only upload GIF, not JSON)
+            asset_info = None
+            if use_cos:
+                try:
+                    # Generate asset ID
+                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
+                    
+                    # Prepare metadata
+                    metadata = {
+                        "width": width,
+                        "height": height,
+                        "frame_count": 1
+                    }
+                    
+                    # Upload GIF to COS (not JSON)
+                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec, use_direct_credentials)
+                    self.logger.info(f"Successfully uploaded pixel image GIF to COS: {asset_info['key']}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
+                    use_cos = False
             
             # Prepare input parameters for GIF action according to device model
             if use_cos and asset_info:
@@ -847,6 +854,8 @@ class MugService:
             
             # Prepare asset data for COS upload if enabled
             asset_info = None
+            # Prepare input parameters according to device model
+            self.logger.info(f"use_cos: {use_cos} - asset_info: {asset_info}")
             if use_cos:
                 try:
                     # Generate asset ID and filename
@@ -865,7 +874,7 @@ class MugService:
                     }
                     
                     # Upload actual GIF file to COS
-                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec)
+                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec, use_direct_credentials)
                     # Override filename in asset_info
                     asset_info["file_name"] = file_name
                     self.logger.info(f"Successfully uploaded GIF file to COS: {asset_info['key']}")
@@ -873,10 +882,11 @@ class MugService:
                     self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
                     use_cos = False
             
-            # Prepare input parameters according to device model
+            
             if use_cos and asset_info:
                 # Use device model parameters: sta_file_name, sta_file_len, sta_file_url, sta_port
                 # Determine port based on URL protocol
+                self.logger.info(f"COS success - asset_info: {asset_info}")
                 url = asset_info["url"]
                 if url.startswith("https://"):
                     port = 443
@@ -889,10 +899,12 @@ class MugService:
                     "sta_file_url": url,
                     "sta_port": port
                 }
+                self.logger.info(f"COS success URL: {url}")
                 delivery_method = "cos"
             else:
                 # For direct transmission, we need to create a temporary GIF and upload it
                 # Since device model only accepts COS parameters, we'll create a minimal GIF
+                self.logger.info(f"COS failed - frames: {frames}")
                 if not frames:
                     raise ValueError("Cannot send GIF without frames when COS is disabled")
                 
@@ -1381,7 +1393,7 @@ class MugService:
                 "product_id": product_id,
                 "device_name": device_name,
                 "device_status": {
-                    "online": resp.Device.Status == 1,  # 1表示在线
+                    "online": resp.Device.Status == 0,  # 0表示在线
                     "last_online_time": getattr(resp.Device, 'FirstOnlineTime', None),
                     "last_offline_time": getattr(resp.Device, 'LastOfflineTime', None),
                     "client_ip": getattr(resp.Device, 'ClientIP', None),
@@ -1395,6 +1407,7 @@ class MugService:
             }
             
             self.logger.info(f"Successfully queried device status for {product_id}/{device_name}")
+            self.logger.info(f"Device status: {resp}")
             return result
             
         except Exception as e:
@@ -1837,7 +1850,6 @@ if FASTAPI_AVAILABLE:
             "requirements": {
                 "env_vars": {
                     "IOT_ROLE_ARN": "CAM Role ARN (required)",
-                    "COS_BUCKET": "COS bucket name (optional, default: pixelmug-assets)",
                     "COS_OWNER_UIN": "COS bucket owner UIN (main account or sub-account UIN that owns the bucket)",
                     "COS_BUCKET_NAME": "COS bucket name for policy (required for COS operations)",
                     "COS_REGION": "COS region (optional, default: ap-guangzhou)",
