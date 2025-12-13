@@ -30,24 +30,6 @@ class MCPServer:
         self.logger = logging.getLogger(__name__)
         self.setup_logging()
         
-        # 固定设备配置 - 调试版本
-        self.fixed_product_id = "H3PI4FBTV5"
-        self.fixed_device_name = "3CDC7580F950"
-        
-        self.logger.info(f"🔧 调试版本 - 固定设备: {self.fixed_product_id}/{self.fixed_device_name}")
-    
-    def _apply_fixed_device(self, params):
-        """覆盖product_id和device_name为固定值"""
-        original_product_id = params.get('product_id', 'None')
-        original_device_name = params.get('device_name', 'None')
-        
-        params['product_id'] = self.fixed_product_id
-        params['device_name'] = self.fixed_device_name
-        
-        self.logger.info(f"🔧 设备覆盖: {original_product_id}/{original_device_name} -> {self.fixed_product_id}/{self.fixed_device_name}")
-        
-        return params
-        
     def setup_logging(self):
         """Configure logging"""
         logging.basicConfig(
@@ -151,7 +133,6 @@ class MCPServer:
     
     async def _handle_issue_sts(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle issue_sts request"""
-        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         user_id = params.get('user_id', 'alaya_user')
@@ -169,7 +150,6 @@ class MCPServer:
     
     async def _handle_send_pixel_image(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle send_pixel_image request"""
-        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         image_data = params.get('image_data')
@@ -192,7 +172,6 @@ class MCPServer:
     
     async def _handle_send_gif_animation(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle send_gif_animation request"""
-        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         gif_data = params.get('gif_data')
@@ -229,7 +208,6 @@ class MCPServer:
     
     async def _handle_get_device_status(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle get_device_status request"""
-        params = self._apply_fixed_device(params)
         product_id = params.get("product_id")
         device_name = params.get("device_name")
         user_id = params.get('user_id', 'alaya_user')
@@ -247,7 +225,6 @@ class MCPServer:
     
     async def _handle_send_display_text(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Handle send_display_text request"""
-        params = self._apply_fixed_device(params)
         product_id = params.get('product_id')
         device_name = params.get('device_name')
         # allow empty string but require the key to exist

@@ -1437,7 +1437,13 @@ class MugService:
             
             # Prepare input parameters for device action
             input_params = {
-                "set_text": text
+                "set_text": text,
+                "set_text_size": len(text),
+                "set_text_color": 56893289,
+                "set_text_dir": 1,
+                "set_text_speed": 30,
+                "set_text_bg_color": 0,
+
             }
             
             # Create CallDeviceActionAsync request
