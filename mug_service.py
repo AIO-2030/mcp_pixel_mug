@@ -14,7 +14,14 @@ import re
 import io
 import os
 import hashlib
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Tuple
+
+# 导入颜色生成器模块
+try:
+    from . import color_generator
+except ImportError:
+    # 如果相对导入失败，尝试绝对导入（适用于直接运行脚本的情况）
+    import color_generator
 
 # 腾讯云STS相关依赖
 try:
@@ -1393,7 +1400,7 @@ class MugService:
                 "product_id": product_id,
                 "device_name": device_name,
                 "device_status": {
-                    "online": resp.Device.Status == 0,  # 0表示在线
+                    "online": resp.Device.Status == 1,  # 1表示在线
                     "last_online_time": getattr(resp.Device, 'FirstOnlineTime', None),
                     "last_offline_time": getattr(resp.Device, 'LastOfflineTime', None),
                     "client_ip": getattr(resp.Device, 'ClientIP', None),
@@ -1435,14 +1442,17 @@ class MugService:
             client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
             region = os.getenv("DEFAULT_REGION", "ap-guangzhou")
             
+            # 生成随机颜色对（鲜亮显眼的文本颜色和对比鲜明的背景颜色）
+            text_color, bg_color = color_generator.generate_color_pair()
+            
             # Prepare input parameters for device action
             input_params = {
                 "set_text": text,
-                "set_text_size": len(text),
-                "set_text_color": 56893289,
+                "set_text_count": len(text),
+                "set_text_color": text_color,
                 "set_text_dir": 1,
                 "set_text_speed": 30,
-                "set_text_bg_color": 0,
+                "set_text_bg_color": bg_color,
 
             }
             
