@@ -37,11 +37,43 @@ class MCPServer:
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
         )
     
+    def _log_request(self, request: Dict[str, Any], max_log_length: int = 1000, max_params_length: int = 500) -> None:
+        """Log request with automatic truncation for long requests
+        
+        Args:
+            request: The JSON-RPC request dictionary
+            max_log_length: Maximum characters to log before truncating (default: 1000)
+            max_params_length: Maximum characters for params preview (default: 500)
+        """
+        request_str = json.dumps(request, ensure_ascii=False)
+        
+        if len(request_str) > max_log_length:
+            # Log abbreviated version
+            method = request.get('method', 'unknown')
+            request_id = request.get('id', 'unknown')
+            params = request.get('params', {})
+            
+            # Create abbreviated params info
+            params_str = json.dumps(params, ensure_ascii=False)
+            if len(params_str) > max_params_length:
+                # Truncate params
+                params_preview = params_str[:max_params_length] + "... (truncated)"
+            else:
+                params_preview = params_str
+            
+            self.logger.info(
+                f"Received request (abbreviated, full length: {len(request_str)} chars): "
+                f"{{'method': '{method}', 'id': {request_id}, 'params': {params_preview}}}"
+            )
+        else:
+            # Log full request
+            self.logger.info(f"Received request: {request}")
+    
     async def handle_request(self, request_data: str) -> str:
         """Handle JSON-RPC requests with ALAYA network validation"""
         try:
             request = json.loads(request_data)
-            self.logger.info(f"Received request: {request}")
+            self._log_request(request)
             
             # Validate JSON-RPC format
             if not self._validate_jsonrpc_request(request):

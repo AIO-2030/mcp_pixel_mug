@@ -457,9 +457,23 @@ class MugService:
             raise
 
     def _push_asset_to_cos(self, product_id: str, device_name: str, asset_data: bytes, 
-                          asset_kind: str, asset_id: str, metadata: Dict[str, Any], 
+                          asset_kind: str, file_name: str, metadata: Dict[str, Any], 
                           ttl_sec: int = 300, use_direct_credentials: bool = True) -> Dict[str, Any]:
-        """Push asset to COS and get signed URL with proper key pattern and metadata"""
+        """Push asset to COS and get signed URL with proper key pattern and metadata
+        
+        Args:
+            product_id: Product ID
+            device_name: Device name
+            asset_data: Asset data bytes
+            asset_kind: Asset kind ("pixel-json" or "gif")
+            file_name: File name without extension (e.g., "gif_asset_1765780420")
+            metadata: Asset metadata
+            ttl_sec: TTL in seconds
+            use_direct_credentials: Use direct credentials flag
+            
+        Returns:
+            Dict containing key, url, file_name (with extension), and other asset info
+        """
         try:
             if not COS_AVAILABLE:
                 raise ImportError("Tencent Cloud COS SDK not installed, please install tencentcloud-sdk-python-cos")
@@ -493,7 +507,7 @@ class MugService:
             sha8 = sha256[:8]  # First 8 characters of SHA256
             current_date = datetime.datetime.utcnow().strftime("%Y%m")
             
-            # Key pattern: pmug/{deviceName}/{YYYYMM}/{assetId}-{sha8}.{ext}
+            # Determine file extension based on asset kind
             if asset_kind == "pixel-json":
                 ext = "json"
             elif asset_kind == "gif":
@@ -501,7 +515,12 @@ class MugService:
             else:
                 ext = "json"
             
-            key = f"pmug/{device_name}/{current_date}/{asset_id}-{sha8}.{ext}"
+            # Key pattern: pmug/{deviceName}/{YYYYMM}/{file_name}-{sha8}.{ext}
+            # file_name is passed from external, ensuring uniqueness
+            key = f"pmug/{device_name}/{current_date}/{file_name}-{sha8}.{ext}"
+            
+            # Generate full file name with extension for sta_file_name
+            full_file_name = f"{file_name}-{sha8}.{ext}"
             
             # 4. Set Content-Type based on asset kind
             content_type = "application/vnd.pmug.pixel+json" if asset_kind == "pixel-json" else "image/gif"
@@ -512,7 +531,7 @@ class MugService:
                 "x-cos-meta-width": str(metadata.get("width", 0)),
                 "x-cos-meta-height": str(metadata.get("height", 0)),
                 "x-cos-meta-frames": str(metadata.get("frame_count", 1)),
-                "x-cos-meta-asset-id": asset_id,
+                "x-cos-meta-file-name": file_name,
                 "x-cos-meta-device-name": device_name,
                 "x-cos-meta-product-id": product_id
             }
@@ -529,12 +548,10 @@ class MugService:
                 StorageClass="STANDARD"
             )
             
-            # 7. Generate signed URL
-            get_url = cos_client.get_presigned_url(
-                Method="GET",
+            # 7. Generate public read URL
+            get_url = cos_client.get_object_url(
                 Bucket=bucket_name,
-                Key=key,
-                Expired=ttl_sec
+                Key=key
             )
             
             # 8. Calculate expiration timestamp
@@ -544,7 +561,7 @@ class MugService:
                 "key": key,
                 "sha256": sha256,
                 "sha8": sha8,
-                "assetId": asset_id,
+                "file_name": full_file_name,  # Full file name with extension: {file_name}-{sha8}.{ext}
                 "url": get_url,
                 "bytes": len(asset_data),
                 "width": metadata.get("width", 0),
@@ -603,8 +620,9 @@ class MugService:
             asset_info = None
             if use_cos:
                 try:
-                    # Generate asset ID
-                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
+                    # Generate file_name with unified logic: pixel_{timestamp}
+                    timestamp = int(datetime.datetime.utcnow().timestamp())
+                    file_name = f"pixel_asset_{timestamp}"
                     
                     # Prepare metadata
                     metadata = {
@@ -614,7 +632,7 @@ class MugService:
                     }
                     
                     # Upload GIF to COS (not JSON)
-                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec, use_direct_credentials)
+                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", file_name, metadata, ttl_sec, use_direct_credentials)
                     self.logger.info(f"Successfully uploaded pixel image GIF to COS: {asset_info['key']}")
                 except Exception as e:
                     self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
@@ -630,8 +648,9 @@ class MugService:
                 else:
                     port = 80
                 
+                # Use the file_name from asset_info which matches the COS URL filename
                 input_params = {
-                    "sta_file_name": f"pixel_{asset_info['assetId']}.gif",
+                    "sta_file_name": asset_info["file_name"],  # This matches the filename in COS URL
                     "sta_file_len": len(gif_bytes),
                     "sta_file_url": url,
                     "sta_port": port
@@ -775,11 +794,19 @@ class MugService:
             pil_frames = []
             durations = []
             
-            for frame in frames:
+            self.logger.info(f"Creating GIF from {len(frames)} frames, width={width}, height={height}")
+            
+            for idx, frame in enumerate(frames):
                 pixel_matrix = frame["pixel_matrix"]
                 duration = frame.get("duration", frame_delay)
                 
+                # Convert duration from milliseconds to seconds (PIL uses seconds)
+                # PIL expects duration in milliseconds, but we'll use it as-is
+                # Actually, PIL's duration parameter expects milliseconds
+                duration_ms = duration
+                
                 # Create PIL image from pixel matrix
+                # Use 'P' mode (palette) for better GIF compatibility
                 img = Image.new('RGB', (width, height))
                 
                 for y in range(height):
@@ -793,27 +820,111 @@ class MugService:
                         b = int(color_hex[4:6], 16)
                         img.putpixel((x, y), (r, g, b))
                 
-                pil_frames.append(img)
-                durations.append(duration)
+                # Convert to palette mode BEFORE appending
+                # This is critical for multi-frame GIFs - each frame must be in palette mode
+                # Convert each frame to palette mode independently
+                img_p = img.quantize()
+                
+                # Make a copy to ensure frame independence
+                img_copy = img_p.copy()
+                
+                pil_frames.append(img_copy)
+                durations.append(duration_ms)
+                
+                # Log first few pixels to verify frames are different
+                if idx < 3:
+                    sample_pixels = []
+                    for sy in range(min(3, height)):
+                        for sx in range(min(3, width)):
+                            sample_pixels.append(pixel_matrix[sy][sx])
+                    self.logger.debug(f"Frame {idx}: duration={duration_ms}ms, size={img_copy.size}, mode={img_copy.mode}, sample_pixels={sample_pixels[:9]}")
+                else:
+                    self.logger.debug(f"Frame {idx}: duration={duration_ms}ms, size={img_copy.size}, mode={img_copy.mode}")
+            
+            self.logger.info(f"Created {len(pil_frames)} PIL images, durations: {durations}")
+            
+            # Verify frames are different by comparing all frames
+            if len(pil_frames) > 1:
+                all_frames_identical = True
+                frame0_data = list(pil_frames[0].getdata())
+                
+                for idx in range(1, len(pil_frames)):
+                    frame_data = list(pil_frames[idx].getdata())
+                    if frame0_data != frame_data:
+                        all_frames_identical = False
+                        self.logger.info(f"Frame {idx} is different from frame 0")
+                        break
+                
+                if all_frames_identical:
+                    self.logger.error("CRITICAL: All frames are IDENTICAL! PIL will optimize them into a single frame.")
+                    self.logger.error("This is a data issue - all frames have the same pixel values.")
+                    # Check if all pixels are the same color
+                    unique_colors = set(frame0_data)
+                    if len(unique_colors) == 1:
+                        self.logger.error(f"All pixels in all frames are the same color: {unique_colors}")
+                else:
+                    # Check first two frames
+                    frame1_data = list(pil_frames[1].getdata())
+                    frames_are_different = frame0_data != frame1_data
+                    self.logger.info(f"Frame comparison: frames 0 and 1 are {'different' if frames_are_different else 'IDENTICAL'}")
             
             # Create GIF
             gif_buffer = io.BytesIO()
             
             # Save as GIF with proper parameters
-            pil_frames[0].save(
-                gif_buffer,
-                format='GIF',
-                save_all=True,
-                append_images=pil_frames[1:],
-                duration=durations,
-                loop=loop_count if loop_count > 0 else 0,  # 0 means infinite loop
-                optimize=True
-            )
+            # Note: PIL's duration parameter expects milliseconds
+            append_images = pil_frames[1:] if len(pil_frames) > 1 else []
+            
+            # Always use list for duration to ensure each frame gets its own duration
+            # Even if all durations are the same, using a list is more reliable
+            duration_value = durations
+            self.logger.info(f"Using duration list: {durations}")
+            
+            # Try multiple save strategies if first one fails
+            save_kwargs = {
+                'format': 'GIF',
+                'save_all': True,
+                'append_images': append_images,
+                'duration': duration_value,  # Always use list
+                'loop': loop_count if loop_count > 0 else 0,  # 0 means infinite loop
+                'optimize': False  # Disable optimization to ensure all frames are saved
+            }
+            
+            self.logger.info(f"Saving GIF: {len(pil_frames)} frames, duration={duration_value}, loop={save_kwargs['loop']}, append_images={len(append_images)}")
+            
+            # Save first frame with all other frames appended
+            try:
+                pil_frames[0].save(gif_buffer, **save_kwargs)
+            except Exception as e:
+                self.logger.error(f"Failed to save GIF with standard method: {str(e)}")
+                # Try without disposal parameter
+                save_kwargs_no_disposal = save_kwargs.copy()
+                if 'disposal' in save_kwargs_no_disposal:
+                    del save_kwargs_no_disposal['disposal']
+                self.logger.info("Retrying without disposal parameter...")
+                pil_frames[0].save(gif_buffer, **save_kwargs_no_disposal)
             
             gif_bytes = gif_buffer.getvalue()
             gif_buffer.close()
             
-            self.logger.info(f"Created GIF with {len(frames)} frames, {len(gif_bytes)} bytes")
+            # Verify the GIF was created correctly by checking if we can read it back
+            if PIL_AVAILABLE and len(gif_bytes) > 0:
+                try:
+                    verify_img = Image.open(io.BytesIO(gif_bytes))
+                    frame_count = 0
+                    try:
+                        while True:
+                            verify_img.seek(frame_count)
+                            frame_count += 1
+                    except EOFError:
+                        pass
+                    self.logger.info(f"Created GIF with {len(frames)} input frames, {frame_count} frames in output file, {len(gif_bytes)} bytes")
+                    if frame_count != len(frames):
+                        self.logger.warning(f"Frame count mismatch: expected {len(frames)} frames, but GIF contains {frame_count} frames")
+                except Exception as e:
+                    self.logger.warning(f"Could not verify GIF frame count: {str(e)}")
+            else:
+                self.logger.info(f"Created GIF with {len(frames)} frames, {len(gif_bytes)} bytes")
             return gif_bytes
             
         except Exception as e:
@@ -833,31 +944,84 @@ class MugService:
             frames = None
             gif_bytes = None
             
+            self.logger.info(f"Processing GIF data, type: {type(gif_data).__name__}")
+            
             if isinstance(gif_data, str):
                 # If it's base64 encoded GIF, we can use it directly or process to frames
+                self.logger.info("Branch: gif_data is string, attempting base64 decode")
                 try:
                     # Try to decode as base64 GIF first
                     gif_bytes = base64.b64decode(gif_data)
+                    self.logger.info(f"Successfully decoded base64, size: {len(gif_bytes)} bytes")
+                    
                     # Validate it's a GIF by trying to open it
                     if PIL_AVAILABLE:
                         test_img = Image.open(io.BytesIO(gif_bytes))
+                        self.logger.info(f"Image opened successfully, format: {test_img.format}")
                         if test_img.format != 'GIF':
                             # Not a GIF, process as frames
+                            self.logger.warning(f"Image format is {test_img.format}, not GIF. Processing as frames")
                             frames = self._process_gif_to_frames(gif_data, target_width, target_height)
                             gif_bytes = None
-                except Exception:
+                            self.logger.info(f"Processed to frames, frame count: {len(frames) if frames else 0}")
+                        else:
+                            self.logger.info("Valid GIF format detected, using gif_bytes directly")
+                    else:
+                        self.logger.warning("PIL not available, cannot validate GIF format. Assuming valid GIF")
+                except Exception as e:
                     # If base64 decode fails, treat as frame data
+                    self.logger.warning(f"Base64 decode failed: {str(e)}, treating as frame data")
                     frames = self._process_gif_to_frames(gif_data, target_width, target_height)
+                    self.logger.info(f"Processed to frames, frame count: {len(frames) if frames else 0}")
             elif isinstance(gif_data, dict) and "frames" in gif_data:
                 # If it's palette-based GIF format
+                self.logger.info("Branch: gif_data is dict with 'frames' key, processing as palette-based GIF format")
                 frames = self._process_palette_gif_animation(gif_data, target_width, target_height)
-            else:
+                self.logger.info(f"Processed palette-based GIF, frame count: {len(frames) if frames else 0}")
+            elif isinstance(gif_data, list):
                 # If it's already frame array
+                self.logger.info(f"Branch: gif_data is list, treating as frame array")
+                
+                # Validate frame structure
+                if len(gif_data) == 0:
+                    raise ValueError("gif_data list is empty")
+                
+                # Check first frame structure
+                first_frame = gif_data[0]
+                if not isinstance(first_frame, dict):
+                    raise ValueError(f"Frame must be a dict, got {type(first_frame).__name__}")
+                
+                if "pixel_matrix" not in first_frame:
+                    raise ValueError("Frame missing required 'pixel_matrix' field")
+                
+                self.logger.info(f"Frame array structure validated: {len(gif_data)} frames")
+                self.logger.info(f"First frame keys: {list(first_frame.keys())}")
+                self.logger.info(f"First frame has duration: {'duration' in first_frame}")
+                
                 frames = gif_data
+                self.logger.info(f"Using frames directly, frame count: {len(frames)}")
+                
+                # Log frame details
+                for idx, frame in enumerate(frames):
+                    frame_duration = frame.get("duration", "not set")
+                    pixel_matrix = frame.get("pixel_matrix", [])
+                    matrix_height = len(pixel_matrix) if pixel_matrix else 0
+                    matrix_width = len(pixel_matrix[0]) if pixel_matrix and len(pixel_matrix) > 0 else 0
+                    self.logger.debug(f"Frame {idx}: duration={frame_duration}, size={matrix_width}x{matrix_height}")
+            else:
+                # Unknown type
+                raise ValueError(f"Unsupported gif_data type: {type(gif_data).__name__}, expected str, dict, or list")
                 
             # Validate we have either frames or GIF bytes
+            self.logger.info(f"Validation: frames={frames is not None}, gif_bytes={gif_bytes is not None}")
             if not frames and not gif_bytes:
+                self.logger.error("No valid GIF data found: both frames and gif_bytes are None")
                 raise ValueError("No valid GIF data found")
+            else:
+                if frames:
+                    self.logger.info(f"Using frames data, count: {len(frames)}")
+                if gif_bytes:
+                    self.logger.info(f"Using gif_bytes data, size: {len(gif_bytes)} bytes")
             
             # Prepare asset data for COS upload if enabled
             asset_info = None
@@ -865,9 +1029,9 @@ class MugService:
             self.logger.info(f"use_cos: {use_cos} - asset_info: {asset_info}")
             if use_cos:
                 try:
-                    # Generate asset ID and filename
-                    asset_id = f"asset_{int(datetime.datetime.utcnow().timestamp())}"
-                    file_name = f"gif_{asset_id}.gif"
+                    # Generate file_name with unified logic: gif_asset_{timestamp}
+                    timestamp = int(datetime.datetime.utcnow().timestamp())
+                    file_name = f"gif_asset_{timestamp}"
                     
                     # Create GIF file if we have frames
                     if frames and not gif_bytes:
@@ -881,9 +1045,7 @@ class MugService:
                     }
                     
                     # Upload actual GIF file to COS
-                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", asset_id, metadata, ttl_sec, use_direct_credentials)
-                    # Override filename in asset_info
-                    asset_info["file_name"] = file_name
+                    asset_info = self._push_asset_to_cos(product_id, device_name, gif_bytes, "gif", file_name, metadata, ttl_sec, use_direct_credentials)
                     self.logger.info(f"Successfully uploaded GIF file to COS: {asset_info['key']}")
                 except Exception as e:
                     self.logger.warning(f"Failed to upload to COS, falling back to direct transmission: {str(e)}")
@@ -900,8 +1062,9 @@ class MugService:
                 else:
                     port = 80
                 
+                # Use the file_name from asset_info which matches the COS URL filename
                 input_params = {
-                    "sta_file_name": asset_info["file_name"],
+                    "sta_file_name": asset_info["file_name"],  # This matches the filename in COS URL: {file_name}-{sha8}.gif
                     "sta_file_len": asset_info["bytes"],
                     "sta_file_url": url,
                     "sta_port": port
@@ -1431,12 +1594,45 @@ class MugService:
             use_direct_credentials: If True, use sub-account credentials directly without STS
         """
         try:
-            # Validate text input
-            if not isinstance(text, str):
-                raise ValueError("Text must be a string")
+            # 1. Handle text input (could be str or bytes)
+            processed_text = None
+            if isinstance(text, bytes):
+                # If input is bytes, try to decode with common encodings
+                for encoding in ['utf-8', 'gbk', 'gb2312', 'big5', 'latin1', 'cp1252']:
+                    try:
+                        processed_text = text.decode(encoding)
+                        self.logger.info(f"Decoded bytes using encoding: {encoding}")
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                
+                if processed_text is None:
+                    # If all encodings fail, use UTF-8 with error handling
+                    processed_text = text.decode('utf-8', errors='ignore')
+                    self.logger.warning("Failed to decode with common encodings, using UTF-8 with error handling")
+            elif isinstance(text, str):
+                # If input is already a string, use it directly
+                processed_text = text
+            else:
+                raise ValueError("Text must be a string or bytes")
             
-            if len(text) > 200:
-                raise ValueError(f"Text length {len(text)} exceeds maximum limit of 200 characters")
+            # 2. Check and truncate text length to ensure < 200 characters
+            original_length = len(processed_text)
+            if len(processed_text) >= 200:
+                processed_text = processed_text[:199]  # Truncate to ensure < 200
+                self.logger.warning(f"Text length {original_length} exceeds 200, truncated to {len(processed_text)} characters")
+            
+            # 3. Ensure text is in UTF-8 format and encode to base64
+            # Convert to UTF-8 bytes (handles any remaining encoding issues)
+            try:
+                text_utf8_bytes = processed_text.encode('utf-8')
+            except UnicodeEncodeError:
+                # If encoding fails, use error handling
+                text_utf8_bytes = processed_text.encode('utf-8', errors='ignore')
+                self.logger.warning("Some characters were ignored during UTF-8 encoding")
+            
+            # Base64 encode the UTF-8 bytes
+            text_base64 = base64.b64encode(text_utf8_bytes).decode('utf-8')
             
             # Create IoT client with direct credentials for stdio mode
             client = self._create_iot_client_with_sts(use_direct_credentials=use_direct_credentials)
@@ -1446,9 +1642,10 @@ class MugService:
             text_color, bg_color = color_generator.generate_color_pair()
             
             # Prepare input parameters for device action
+            # Use base64 encoded text for set_text
             input_params = {
-                "set_text": text,
-                "set_text_count": len(text),
+                "set_text": text_base64,
+                "set_text_count": len(processed_text),  # Use original text length (after truncation)
                 "set_text_color": text_color,
                 "set_text_dir": 1,
                 "set_text_speed": 30,
@@ -1484,9 +1681,12 @@ class MugService:
                 "device_name": device_name,
                 "action_id": "run_display_text",
                 "text_info": {
-                    "text": text,
-                    "length": len(text),
-                    "max_length": 200
+                    "text": processed_text,  # Processed text (after truncation and encoding conversion)
+                    "original_length": original_length if original_length != len(processed_text) else None,
+                    "length": len(processed_text),
+                    "max_length": 200,
+                    "is_base64_encoded": True,
+                    "encoding": "utf-8"
                 },
                 "credential_type": "direct_subaccount" if use_direct_credentials else "sts_temporary",
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z"
