@@ -14,6 +14,7 @@ import re
 import io
 import os
 import hashlib
+import threading
 from typing import Dict, Any, Optional, Union, List, Tuple
 
 # 导入颜色生成器模块
@@ -22,6 +23,13 @@ try:
 except ImportError:
     # 如果相对导入失败，尝试绝对导入（适用于直接运行脚本的情况）
     import color_generator
+
+# 导入GIF缩放器模块
+try:
+    from . import gif_resizer
+except ImportError:
+    # 如果相对导入失败，尝试绝对导入（适用于直接运行脚本的情况）
+    import gif_resizer
 
 # 腾讯云STS相关依赖
 try:
@@ -59,6 +67,30 @@ class MugService:
     
     def __init__(self):
         self.logger = logging.getLogger(__name__)
+    
+    def _generate_short_filename(self) -> str:
+        """
+        生成短文件名（不超过6字节）
+        
+        使用线程ID和timestamp作为因子，通过hash算法生成短文件名
+        
+        Returns:
+            不超过6个字符的文件名（只包含字母和数字）
+        """
+        # 获取当前线程ID
+        thread_id = threading.get_ident()
+        # 获取当前时间戳
+        timestamp = int(datetime.datetime.utcnow().timestamp() * 1000000)  # 微秒精度
+        
+        # 使用MD5生成hash
+        hash_input = f"{thread_id}_{timestamp}".encode('utf-8')
+        hash_obj = hashlib.md5(hash_input)
+        hash_hex = hash_obj.hexdigest()
+        
+        # 取前6个字符（6字节）
+        short_name = hash_hex[:6]
+        
+        return short_name
         
     def get_help(self) -> Dict[str, Any]:
         """Return service help information"""
@@ -517,10 +549,10 @@ class MugService:
             
             # Key pattern: pmug/{deviceName}/{YYYYMM}/{file_name}-{sha8}.{ext}
             # file_name is passed from external, ensuring uniqueness
-            key = f"pmug/{device_name}/{current_date}/{file_name}-{sha8}.{ext}"
+            key = f"{device_name}/{file_name}.{ext}"
             
             # Generate full file name with extension for sta_file_name
-            full_file_name = f"{file_name}-{sha8}.{ext}"
+            full_file_name = f"{file_name}.{ext}"
             
             # 4. Set Content-Type based on asset kind
             content_type = "application/vnd.pmug.pixel+json" if asset_kind == "pixel-json" else "image/gif"
@@ -620,9 +652,8 @@ class MugService:
             asset_info = None
             if use_cos:
                 try:
-                    # Generate file_name with unified logic: pixel_{timestamp}
-                    timestamp = int(datetime.datetime.utcnow().timestamp())
-                    file_name = f"pixel_asset_{timestamp}"
+                    # Generate short file_name using hash algorithm (max 6 bytes)
+                    file_name = self._generate_short_filename()
                     
                     # Prepare metadata
                     metadata = {
@@ -925,6 +956,15 @@ class MugService:
                     self.logger.warning(f"Could not verify GIF frame count: {str(e)}")
             else:
                 self.logger.info(f"Created GIF with {len(frames)} frames, {len(gif_bytes)} bytes")
+            
+            # 缩放GIF为标准尺寸(32x16)
+            try:
+                gif_bytes = gif_resizer.resize_gif_to_standard(gif_bytes)
+                self.logger.info(f"GIF resized to standard size (32x16), final size: {len(gif_bytes)} bytes")
+            except Exception as e:
+                self.logger.warning(f"Failed to resize GIF to standard size: {str(e)}, using original size")
+                # 如果缩放失败，继续使用原始GIF
+            
             return gif_bytes
             
         except Exception as e:
@@ -966,8 +1006,20 @@ class MugService:
                             self.logger.info(f"Processed to frames, frame count: {len(frames) if frames else 0}")
                         else:
                             self.logger.info("Valid GIF format detected, using gif_bytes directly")
+                            # 缩放GIF为标准尺寸(32x16)
+                            try:
+                                gif_bytes = gif_resizer.resize_gif_to_standard(gif_bytes)
+                                self.logger.info(f"GIF resized to standard size (32x16), final size: {len(gif_bytes)} bytes")
+                            except Exception as e:
+                                self.logger.warning(f"Failed to resize GIF to standard size: {str(e)}, using original size")
                     else:
                         self.logger.warning("PIL not available, cannot validate GIF format. Assuming valid GIF")
+                        # 即使PIL不可用，也尝试缩放（gif_resizer内部会处理）
+                        try:
+                            gif_bytes = gif_resizer.resize_gif_to_standard(gif_bytes)
+                            self.logger.info(f"GIF resized to standard size (32x16), final size: {len(gif_bytes)} bytes")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to resize GIF to standard size: {str(e)}, using original size")
                 except Exception as e:
                     # If base64 decode fails, treat as frame data
                     self.logger.warning(f"Base64 decode failed: {str(e)}, treating as frame data")
@@ -1029,9 +1081,8 @@ class MugService:
             self.logger.info(f"use_cos: {use_cos} - asset_info: {asset_info}")
             if use_cos:
                 try:
-                    # Generate file_name with unified logic: gif_asset_{timestamp}
-                    timestamp = int(datetime.datetime.utcnow().timestamp())
-                    file_name = f"gif_asset_{timestamp}"
+                    # Generate short file_name using hash algorithm (max 6 bytes)
+                    file_name = self._generate_short_filename()
                     
                     # Create GIF file if we have frames
                     if frames and not gif_bytes:
